@@ -54,6 +54,7 @@
 
 #include <Arduino.h>
 #include "config.h"
+#include "known_devices_api.h"
 
 
 #ifndef AUDIO_RECORD_STOP_POLL_MS
@@ -207,8 +208,17 @@ static void boardEarlyInit() {
 
 static bool boardMountSd() {
 #if RR_SHARED_SPI
-    boardDeselectSharedSpi();
-    return SD.begin(SD_CS, tft.getSPIinstance(), 4000000);
+    if (SD.cardType() != CARD_NONE) return true;
+    const uint32_t frequencies[] = {10000000UL, 4000000UL, 1000000UL};
+    for (uint32_t frequency : frequencies) {
+        boardDeselectSharedSpi();
+        delay(20);
+        if (SD.begin(SD_CS, tft.getSPIinstance(), frequency)) return true;
+        // Clear only a failed Arduino SD driver attempt. The shared SPI bus
+        // remains initialized and owned by TFT_eSPI.
+        SD.end();
+    }
+    return false;
 #else
     return SD.begin(SD_CS, sdSPI);
 #endif
@@ -228,13 +238,16 @@ AlertLedStrip ledStrip;
 rgb_color ledBuf[NUM_LEDS];
 
 struct MenuLED { uint8_t r, g, b; };
-const MenuLED MENU_COLORS[6] = {
+const MenuLED MENU_COLORS[9] = {
     LED_COLOR_WIFI,
     LED_COLOR_BLE,
     LED_COLOR_GPS,
     LED_COLOR_AUDIO,
     LED_COLOR_MISC,
-    {255, 32, 32}
+    {255, 32, 32},
+    {0, 180, 150},
+    {0, 120, 255},
+    {150, 50, 255}
 };
 
 // ─── LED Spinner (FreeRTOS task on core 0) ───────────────────────
@@ -876,6 +889,7 @@ enum BLEDeviceType {
 struct BLEEntry {
     char          name[33];    // advertised local name (or "<unknown>")
     char          mac[18];     // XX:XX:XX:XX:XX:XX
+    uint8_t       addressType; // BLE public/random identity discriminator
     int8_t        rssi;
     BLEDeviceType type;
     char          mfgHint[14]; // short manufacturer hint for list row
@@ -896,6 +910,7 @@ static const char *pwnDeviceType(const PwnEntry &e);
 struct NyanBoxEntry {
     char     name[33];
     char     mac[18];
+    uint8_t  addressType;
     int8_t   rssi;
     uint16_t level;
     char     version[16];
@@ -909,6 +924,7 @@ static int          nyanEntryCount = 0;
 struct AxonEntry {
     char     name[33];
     char     mac[18];
+    uint8_t  addressType;
     int8_t   rssi;
     uint32_t lastSeen;
 };
@@ -920,6 +936,7 @@ static int       axonEntryCount = 0;
 struct TeslaEntry {
     char     name[33];
     char     mac[18];
+    uint8_t  addressType;
     int8_t   rssi;
     uint32_t lastSeen;
 };
@@ -931,6 +948,7 @@ static int        teslaEntryCount = 0;
 struct RavenEntry {
     char     name[33];
     char     mac[18];
+    uint8_t  addressType;
     int8_t   rssi;
     char     matchedUuid[41];
     char     fwEstimate[16];
@@ -948,6 +966,7 @@ static int        ravenEntryCount = 0;
 struct SmartChargerEntry {
     char     name[33];
     char     mac[18];
+    uint8_t  addressType;
     int8_t   rssi;
     char     matchMethod[24];
     char     advUuid[41];
@@ -980,6 +999,7 @@ struct LiveBleObservation {
     BLEDeviceType type;
     char name[33];
     char mac[18];
+    uint8_t addressType;
     bool hasName;
     bool hasManufacturer;
     int8_t rssi;
@@ -1029,7 +1049,8 @@ static int liveBleProtectedIndex = -1;
 // ════════════════════════════════════════════════════════════════
 void createMainMenu();
 void createWiFiMenu();
-static void createSignalTracker(bool isBle, const char *name, const char *mac, uint8_t channel);
+static void createSignalTracker(bool isBle, const char *name, const char *mac, uint8_t channel,
+                                uint8_t addressType = 255);
 static void processSignalTracker();
 void createNetworkScanner();
 void createNetworkDetail(int idx);
@@ -2738,13 +2759,16 @@ static void deleteGroup(lv_group_t **g)   { if (*g) { lv_group_delete(*g); *g = 
 //  MAIN MENU
 // ════════════════════════════════════════════════════════════════
 struct MenuItem { const char *icon; const char *label; const char *subTitle; };
-static const MenuItem MENU_ITEMS[6] = {
+static const MenuItem MENU_ITEMS[9] = {
     { LV_SYMBOL_WIFI,      "WiFi Tools",   LV_SYMBOL_WIFI      "  WiFi Tools"   },
     { LV_SYMBOL_BLUETOOTH, "BLE Tools",    LV_SYMBOL_BLUETOOTH "  BLE Tools"    },
     { LV_SYMBOL_GPS,       "GPS Tools",    LV_SYMBOL_GPS       "  GPS Tools"    },
     { LV_SYMBOL_AUDIO,     "Audio Tools",  LV_SYMBOL_AUDIO     "  Audio Tools"  },
     { LV_SYMBOL_SETTINGS,  "Misc Tools",   LV_SYMBOL_SETTINGS  "  Misc Tools"   },
     { LV_SYMBOL_POWER,     "Power On/Off", LV_SYMBOL_POWER     "  Power On/Off" },
+    { LV_SYMBOL_SAVE,      "Saved Devices", "Find and Track Known Devices" },
+    { LV_SYMBOL_WIFI,      "Nearby Signals", "Nearby Signals" },
+    { LV_SYMBOL_EYE_OPEN,  "Learn a Known Device", "Learn a Known Device" },
 };
 
 static void cb_menuFocused(lv_event_t *e) {
@@ -2761,6 +2785,9 @@ static void cb_menuClicked(lv_event_t *e) {
     else if (idx == 3) createAudioMenu();
     else if (idx == 4) createMiscMenu();
     else if (idx == 5) createPowerOffConfirm();
+    else if (idx == 6) createSavedDevices();
+    else if (idx == 7) createNearbySignals();
+    else if (idx == 8) createLearnKnownDevice();
     else               createSubScreen(idx);
 }
 
@@ -2786,7 +2813,7 @@ void createMainMenu() {
     navGroup = lv_group_create();
     setGroup(navGroup);
 
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 9; i++) {
 #if !RR_HAS_GPS
         if (i == 2) continue;
 #endif
@@ -7099,6 +7126,10 @@ void createNetworkDetail(int idx) {
     lv_group_add_obj(wifiDetailGroup, card);     // Focus card first so encoder can scroll Station Detail.
     lv_group_add_obj(wifiDetailGroup, backBtn);
     lv_group_add_obj(wifiDetailGroup, trackBtn);
+    knownInstallSaveButton(wifiDetailScreen, wifiDetailGroup, backBtn, trackBtn,
+                           rogue_radar::KnownRadio::Wifi, wifiEntries[idx].ssid,
+                           wifiEntries[idx].bssid, wifiEntries[idx].rssi,
+                           wifiEntries[idx].channel, 0, 255);
     setGroup(wifiDetailGroup);
 
     lv_screen_load_anim(wifiDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -11318,6 +11349,7 @@ static void liveBleMailboxPush(const LiveBleObservation &observation) {
     for (uint8_t offset = 0; offset < liveBleMailboxCount; ++offset) {
         const uint8_t index = (liveBleMailboxHead + offset) % LIVE_BLE_MAILBOX_CAPACITY;
         if (liveBleMailbox[index].mode == observation.mode &&
+            liveBleMailbox[index].addressType == observation.addressType &&
             strcmp(liveBleMailbox[index].mac, observation.mac) == 0) {
             liveBleMailbox[index] = observation;
             portEXIT_CRITICAL(&liveBleMailboxMux);
@@ -11358,6 +11390,7 @@ static void liveBleAdvertisement(BLEAdvertisedDevice &dev, void *context) {
     LiveBleObservation observation{};
     observation.mode = mode;
     observation.type = type;
+    observation.addressType = static_cast<uint8_t>(dev.getAddressType());
     observation.rssi = static_cast<int8_t>(dev.getRSSI());
     observation.seenMs = millis();
 
@@ -11438,7 +11471,8 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
         o.mode == LiveBleMode::Meta) {
         int idx = -1;
         for (int i = 0; i < bleEntryCount; ++i) {
-            if (strcmp(bleEntries[i].mac, o.mac) == 0) { idx = i; break; }
+            if (bleEntries[i].addressType == o.addressType &&
+                strcmp(bleEntries[i].mac, o.mac) == 0) { idx = i; break; }
         }
         const bool added = idx < 0;
         if (idx < 0) {
@@ -11450,6 +11484,7 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
         if (added) memset(&entry, 0, sizeof(entry));
         if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1);
         strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1);
+        entry.addressType = o.addressType;
         entry.rssi = o.rssi;
         entry.type = o.type;
         entry.lastSeen = o.seenMs;
@@ -11462,7 +11497,8 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
     if (o.mode == LiveBleMode::NyanBox) {
         int idx = -1;
         for (int i = 0; i < nyanEntryCount; ++i)
-            if (strcmp(nyanEntries[i].mac, o.mac) == 0) { idx = i; break; }
+            if (nyanEntries[i].addressType == o.addressType &&
+                strcmp(nyanEntries[i].mac, o.mac) == 0) { idx = i; break; }
         const bool added = idx < 0;
         if (idx < 0) {
             if (nyanEntryCount < MAX_NYANBOX_RESULTS) idx = nyanEntryCount++;
@@ -11478,6 +11514,7 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
         if (added) memset(&entry, 0, sizeof(entry));
         if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1);
         strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1);
+        entry.addressType = o.addressType;
         entry.rssi = o.rssi; entry.lastSeen = o.seenMs;
         if (added || o.hasManufacturer) {
             entry.level = o.nyanLevel;
@@ -11489,7 +11526,8 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
     if (o.mode == LiveBleMode::Axon) {
         int idx = -1;
         for (int i = 0; i < axonEntryCount; ++i)
-            if (strcmp(axonEntries[i].mac, o.mac) == 0) { idx = i; break; }
+            if (axonEntries[i].addressType == o.addressType &&
+                strcmp(axonEntries[i].mac, o.mac) == 0) { idx = i; break; }
         const bool added = idx < 0;
         if (idx < 0) {
             if (axonEntryCount < MAX_AXON_RESULTS) idx = axonEntryCount++;
@@ -11505,6 +11543,7 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
         if (added) memset(&entry, 0, sizeof(entry));
         if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1);
         strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1);
+        entry.addressType = o.addressType;
         entry.rssi = o.rssi; entry.lastSeen = o.seenMs;
         return added;
     }
@@ -11512,7 +11551,7 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
 #define LIVE_BLE_UPSERT_SPECIAL(ARRAY, COUNT, MAX_COUNT, TYPE) \
     int idx = -1; \
     for (int i = 0; i < COUNT; ++i) \
-        if (strcmp(ARRAY[i].mac, o.mac) == 0) { idx = i; break; } \
+        if (ARRAY[i].addressType == o.addressType && strcmp(ARRAY[i].mac, o.mac) == 0) { idx = i; break; } \
     const bool added = idx < 0; \
     if (idx < 0) { \
         if (COUNT < MAX_COUNT) idx = COUNT++; \
@@ -11528,6 +11567,7 @@ static bool applyLiveBleObservation(const LiveBleObservation &o) {
     if (added) memset(&entry, 0, sizeof(entry)); \
     if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1); \
     strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1); \
+    entry.addressType = o.addressType; \
     entry.rssi = o.rssi; entry.lastSeen = o.seenMs
 
     if (o.mode == LiveBleMode::Raven) {
@@ -11597,8 +11637,9 @@ static void pollLiveBleScan() {
         liveBleResultsDirty = liveBleResultsDirty || added;
 
         char alertKey[32];
-        snprintf(alertKey, sizeof(alertKey), "ble:%u:%s",
-                 static_cast<unsigned>(observation.mode), observation.mac);
+        snprintf(alertKey, sizeof(alertKey), "ble:%u:%u:%s",
+                 static_cast<unsigned>(observation.mode),
+                 static_cast<unsigned>(observation.addressType), observation.mac);
         if (scanShouldAlert(alertKey)) {
             const bool alertingMode =
                 observation.mode == LiveBleMode::Flipper ||
@@ -11631,9 +11672,10 @@ static int liveBleResultCount() {
     }
 }
 
-static int findNyanBoxByMac(const char *mac) {
+static int findNyanBoxByMac(const char *mac, uint8_t addressType = 255) {
     for (int i = 0; i < nyanEntryCount; i++) {
-        if (strcmp(nyanEntries[i].mac, mac) == 0) return i;
+        if ((addressType == 255 || nyanEntries[i].addressType == addressType) &&
+            strcmp(nyanEntries[i].mac, mac) == 0) return i;
     }
     return -1;
 }
@@ -11652,7 +11694,8 @@ static void sortNyanBoxByRSSI() {
 
 static void upsertNyanBoxDevice(BLEAdvertisedDevice &dev) {
     String macStr = dev.getAddress().toString().c_str();
-    int idx = findNyanBoxByMac(macStr.c_str());
+    const uint8_t addressType = static_cast<uint8_t>(dev.getAddressType());
+    int idx = findNyanBoxByMac(macStr.c_str(), addressType);
     if (idx < 0) {
         if (nyanEntryCount >= MAX_NYANBOX_RESULTS) return;
         idx = nyanEntryCount++;
@@ -11667,6 +11710,7 @@ static void upsertNyanBoxDevice(BLEAdvertisedDevice &dev) {
     nyanEntries[idx].name[sizeof(nyanEntries[idx].name) - 1] = '\0';
 
     nyanEntries[idx].rssi = (int8_t)dev.getRSSI();
+    nyanEntries[idx].addressType = addressType;
     nyanEntries[idx].lastSeen = millis();
     parseNyanBoxManufacturer(dev, nyanEntries[idx].level,
                              nyanEntries[idx].version,
@@ -11723,9 +11767,10 @@ static const char *axonSignalQuality(int8_t rssi) {
     return "WEAK";
 }
 
-static int findAxonByMac(const char *mac) {
+static int findAxonByMac(const char *mac, uint8_t addressType = 255) {
     for (int i = 0; i < axonEntryCount; i++) {
-        if (strcmp(axonEntries[i].mac, mac) == 0) return i;
+        if ((addressType == 255 || axonEntries[i].addressType == addressType) &&
+            strcmp(axonEntries[i].mac, mac) == 0) return i;
     }
     return -1;
 }
@@ -11744,7 +11789,8 @@ static void sortAxonByRSSI() {
 
 static void upsertAxonDevice(BLEAdvertisedDevice &dev) {
     String macStr = dev.getAddress().toString().c_str();
-    int idx = findAxonByMac(macStr.c_str());
+    const uint8_t addressType = static_cast<uint8_t>(dev.getAddressType());
+    int idx = findAxonByMac(macStr.c_str(), addressType);
     if (idx < 0) {
         if (axonEntryCount >= MAX_AXON_RESULTS) return;
         idx = axonEntryCount++;
@@ -11758,6 +11804,7 @@ static void upsertAxonDevice(BLEAdvertisedDevice &dev) {
     axonEntries[idx].name[sizeof(axonEntries[idx].name) - 1] = '\0';
 
     axonEntries[idx].rssi = (int8_t)dev.getRSSI();
+    axonEntries[idx].addressType = addressType;
     axonEntries[idx].lastSeen = millis();
 }
 
@@ -11872,6 +11919,7 @@ static int doBLEScan(int durationSec, BLEDeviceType filterType) {
         bleEntries[bleEntryCount].mac[17] = '\0';
 
         bleEntries[bleEntryCount].rssi = (int8_t)dev.getRSSI();
+        bleEntries[bleEntryCount].addressType = static_cast<uint8_t>(dev.getAddressType());
         bleEntries[bleEntryCount].lastSeen = millis();
         bleEntries[bleEntryCount].type = dtype;
         strncpy(bleEntries[bleEntryCount].mfgHint,
@@ -13793,7 +13841,8 @@ void createBLEDetail(int idx) {
 
     lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
         const int selected = (int)(intptr_t)lv_event_get_user_data(e);
-        createSignalTracker(true, bleEntries[selected].name, bleEntries[selected].mac, 0);
+        createSignalTracker(true, bleEntries[selected].name, bleEntries[selected].mac, 0,
+                            bleEntries[selected].addressType);
     }, (void *)(intptr_t)idx);
 
     deleteGroup(&bleDetailGroup);
@@ -13801,6 +13850,10 @@ void createBLEDetail(int idx) {
     lv_group_add_obj(bleDetailGroup, card);
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, trackBtn);
+    knownInstallSaveButton(bleDetailScreen, bleDetailGroup, backBtn, trackBtn,
+                           rogue_radar::KnownRadio::Ble, bleEntries[idx].name,
+                           bleEntries[idx].mac, bleEntries[idx].rssi, 0,
+                           bleEntries[idx].lastSeen, bleEntries[idx].addressType);
     lv_group_focus_obj(card);
     setGroup(bleDetailGroup);
 
@@ -14226,7 +14279,8 @@ void createNyanBoxDetail(int idx) {
     lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
         const int selected = (int)(intptr_t)lv_event_get_user_data(e);
         if (selected < 0 || selected >= nyanEntryCount) return;
-        createSignalTracker(true, nyanEntries[selected].name, nyanEntries[selected].mac, 0);
+        createSignalTracker(true, nyanEntries[selected].name, nyanEntries[selected].mac, 0,
+                            nyanEntries[selected].addressType);
     }, (void *)(intptr_t)idx);
     // Keep all three actions visible and independently encoder-selectable.
     lv_obj_set_width(backBtn, 86);
@@ -14242,6 +14296,16 @@ void createNyanBoxDetail(int idx) {
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, locateBtn);
     lv_group_add_obj(bleDetailGroup, trackBtn);
+    knownInstallSaveButton(bleDetailScreen, bleDetailGroup, backBtn, trackBtn,
+                           rogue_radar::KnownRadio::Ble, nyanEntries[idx].name,
+                           nyanEntries[idx].mac, nyanEntries[idx].rssi, 0,
+                           nyanEntries[idx].lastSeen, nyanEntries[idx].addressType);
+    lv_obj_set_width(locateBtn, 70);
+    lv_obj_align(locateBtn, LV_ALIGN_BOTTOM_LEFT, 76, -4);
+    lv_obj_set_width(trackBtn, 100);
+    lv_obj_t *saveBtn = lv_obj_get_child(bleDetailScreen, -1);
+    lv_obj_set_width(saveBtn, 60);
+    lv_obj_align(saveBtn, LV_ALIGN_BOTTOM_LEFT, 152, -4);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -14557,7 +14621,8 @@ void createAxonDetail(int idx) {
     lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
         const int selected = (int)(intptr_t)lv_event_get_user_data(e);
         if (selected < 0 || selected >= axonEntryCount) return;
-        createSignalTracker(true, axonEntries[selected].name, axonEntries[selected].mac, 0);
+        createSignalTracker(true, axonEntries[selected].name, axonEntries[selected].mac, 0,
+                            axonEntries[selected].addressType);
     }, (void *)(intptr_t)idx);
     // Keep all three actions visible and independently encoder-selectable.
     lv_obj_set_width(backBtn, 86);
@@ -14573,6 +14638,16 @@ void createAxonDetail(int idx) {
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, locateBtn);
     lv_group_add_obj(bleDetailGroup, trackBtn);
+    knownInstallSaveButton(bleDetailScreen, bleDetailGroup, backBtn, trackBtn,
+                           rogue_radar::KnownRadio::Ble, axonEntries[idx].name,
+                           axonEntries[idx].mac, axonEntries[idx].rssi, 0,
+                           axonEntries[idx].lastSeen, axonEntries[idx].addressType);
+    lv_obj_set_width(locateBtn, 70);
+    lv_obj_align(locateBtn, LV_ALIGN_BOTTOM_LEFT, 76, -4);
+    lv_obj_set_width(trackBtn, 100);
+    lv_obj_t *saveBtn = lv_obj_get_child(bleDetailScreen, -1);
+    lv_obj_set_width(saveBtn, 60);
+    lv_obj_align(saveBtn, LV_ALIGN_BOTTOM_LEFT, 152, -4);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -14693,9 +14768,10 @@ static const char *ravenSignalQuality(int8_t rssi) {
     return "WEAK";
 }
 
-static int findRavenByMac(const char *mac) {
+static int findRavenByMac(const char *mac, uint8_t addressType = 255) {
     for (int i = 0; i < ravenEntryCount; i++) {
-        if (strcmp(ravenEntries[i].mac, mac) == 0) return i;
+        if ((addressType == 255 || ravenEntries[i].addressType == addressType) &&
+            strcmp(ravenEntries[i].mac, mac) == 0) return i;
     }
     return -1;
 }
@@ -14714,7 +14790,8 @@ static void sortRavenByRSSI() {
 
 static void upsertRavenDevice(BLEAdvertisedDevice &dev) {
     String macStr = dev.getAddress().toString().c_str();
-    int idx = findRavenByMac(macStr.c_str());
+    const uint8_t addressType = static_cast<uint8_t>(dev.getAddressType());
+    int idx = findRavenByMac(macStr.c_str(), addressType);
 
     if (idx < 0) {
         if (ravenEntryCount >= MAX_RAVEN_RESULTS) return;
@@ -14742,6 +14819,7 @@ static void upsertRavenDevice(BLEAdvertisedDevice &dev) {
 
     ravenEntries[idx].uuidHitCount = hitCount;
     ravenEntries[idx].rssi = (int8_t)dev.getRSSI();
+    ravenEntries[idx].addressType = addressType;
     ravenEntries[idx].lastSeen = millis();
 }
 
@@ -14976,13 +15054,18 @@ void createRavenDetail(int idx) {
     lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
         const int selected = (int)(intptr_t)lv_event_get_user_data(e);
         if (selected < 0 || selected >= ravenEntryCount) return;
-        createSignalTracker(true, ravenEntries[selected].name, ravenEntries[selected].mac, 0);
+        createSignalTracker(true, ravenEntries[selected].name, ravenEntries[selected].mac, 0,
+                            ravenEntries[selected].addressType);
     }, (void *)(intptr_t)idx);
 
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, trackBtn);
+    knownInstallSaveButton(bleDetailScreen, bleDetailGroup, backBtn, trackBtn,
+                           rogue_radar::KnownRadio::Ble, ravenEntries[idx].name,
+                           ravenEntries[idx].mac, ravenEntries[idx].rssi, 0,
+                           ravenEntries[idx].lastSeen, ravenEntries[idx].addressType);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -15009,9 +15092,10 @@ static const char *chargerSignalQuality(int8_t rssi) {
     return "WEAK";
 }
 
-static int findChargerByMac(const char *mac) {
+static int findChargerByMac(const char *mac, uint8_t addressType = 255) {
     for (int i = 0; i < chargerEntryCount; i++) {
-        if (strcmp(chargerEntries[i].mac, mac) == 0) return i;
+        if ((addressType == 255 || chargerEntries[i].addressType == addressType) &&
+            strcmp(chargerEntries[i].mac, mac) == 0) return i;
     }
     return -1;
 }
@@ -15030,7 +15114,8 @@ static void sortChargersByRSSI() {
 
 static void upsertSmartCharger(BLEAdvertisedDevice &dev) {
     String macStr = dev.getAddress().toString().c_str();
-    int idx = findChargerByMac(macStr.c_str());
+    const uint8_t addressType = static_cast<uint8_t>(dev.getAddressType());
+    int idx = findChargerByMac(macStr.c_str(), addressType);
 
     if (idx < 0) {
         if (chargerEntryCount >= MAX_CHARGER_RESULTS) return;
@@ -15062,6 +15147,7 @@ static void upsertSmartCharger(BLEAdvertisedDevice &dev) {
 
     chargerEntries[idx].confidence = conf;
     chargerEntries[idx].rssi = (int8_t)dev.getRSSI();
+    chargerEntries[idx].addressType = addressType;
     chargerEntries[idx].lastSeen = millis();
 }
 
@@ -15306,7 +15392,8 @@ void createSmartChargerDetail(int idx) {
     lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
         const int selected = (int)(intptr_t)lv_event_get_user_data(e);
         if (selected < 0 || selected >= chargerEntryCount) return;
-        createSignalTracker(true, chargerEntries[selected].name, chargerEntries[selected].mac, 0);
+        createSignalTracker(true, chargerEntries[selected].name, chargerEntries[selected].mac, 0,
+                            chargerEntries[selected].addressType);
     }, (void *)(intptr_t)idx);
 
     deleteGroup(&bleDetailGroup);
@@ -15318,6 +15405,10 @@ void createSmartChargerDetail(int idx) {
     lv_group_add_obj(bleDetailGroup, card);
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, trackBtn);
+    knownInstallSaveButton(bleDetailScreen, bleDetailGroup, backBtn, trackBtn,
+                           rogue_radar::KnownRadio::Ble, chargerEntries[idx].name,
+                           chargerEntries[idx].mac, chargerEntries[idx].rssi, 0,
+                           chargerEntries[idx].lastSeen, chargerEntries[idx].addressType);
     setGroup(bleDetailGroup);
     lv_group_focus_obj(card);
 
@@ -15346,9 +15437,10 @@ static const char *teslaSignalQuality(int8_t rssi) {
     return "WEAK";
 }
 
-static int findTeslaByMac(const char *mac) {
+static int findTeslaByMac(const char *mac, uint8_t addressType = 255) {
     for (int i = 0; i < teslaEntryCount; i++) {
-        if (strcmp(teslaEntries[i].mac, mac) == 0) return i;
+        if ((addressType == 255 || teslaEntries[i].addressType == addressType) &&
+            strcmp(teslaEntries[i].mac, mac) == 0) return i;
     }
     return -1;
 }
@@ -15367,7 +15459,8 @@ static void sortTeslaByRSSI() {
 
 static void upsertTeslaDevice(BLEAdvertisedDevice &dev) {
     String macStr = dev.getAddress().toString().c_str();
-    int idx = findTeslaByMac(macStr.c_str());
+    const uint8_t addressType = static_cast<uint8_t>(dev.getAddressType());
+    int idx = findTeslaByMac(macStr.c_str(), addressType);
     if (idx < 0) {
         if (teslaEntryCount >= MAX_TESLA_RESULTS) return;
         idx = teslaEntryCount++;
@@ -15380,6 +15473,7 @@ static void upsertTeslaDevice(BLEAdvertisedDevice &dev) {
     strncpy(teslaEntries[idx].name, nm.c_str(), sizeof(teslaEntries[idx].name) - 1);
     teslaEntries[idx].name[sizeof(teslaEntries[idx].name) - 1] = '\0';
     teslaEntries[idx].rssi = (int8_t)dev.getRSSI();
+    teslaEntries[idx].addressType = addressType;
     teslaEntries[idx].lastSeen = millis();
 }
 
@@ -15608,13 +15702,18 @@ void createTeslaDetail(int idx) {
     lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
         const int selected = (int)(intptr_t)lv_event_get_user_data(e);
         if (selected < 0 || selected >= teslaEntryCount) return;
-        createSignalTracker(true, teslaEntries[selected].name, teslaEntries[selected].mac, 0);
+        createSignalTracker(true, teslaEntries[selected].name, teslaEntries[selected].mac, 0,
+                            teslaEntries[selected].addressType);
     }, (void *)(intptr_t)idx);
 
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, trackBtn);
+    knownInstallSaveButton(bleDetailScreen, bleDetailGroup, backBtn, trackBtn,
+                           rogue_radar::KnownRadio::Ble, teslaEntries[idx].name,
+                           teslaEntries[idx].mac, teslaEntries[idx].rssi, 0,
+                           teslaEntries[idx].lastSeen, teslaEntries[idx].addressType);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -16121,6 +16220,9 @@ static void pollLiveBleUi() {
 //  AUTO-RETURN HOME
 // ════════════════════════════════════════════════════════════════
 #include "signal_tracker_ui.h"
+#include "known_device_sd.h"
+#include "nearby_signals_ui.h"
+#include "known_devices_ui.h"
 
 static void releaseScreenForAutoReturnHome(lv_obj_t *&scr, lv_obj_t *activeScr) {
     releaseScreenForHome(scr, activeScr, mainScreen);
@@ -16196,6 +16298,7 @@ static void cleanupForAutoReturnHome(lv_obj_t *activeScr) {
 }
 
 static void updateAutoReturnHome() {
+    if (knownDevicesActive() || nearbySignalsActive()) return;
     if (scanSessionAttached()) return;
 #if AUTO_RETURN_HOME_TIMEOUT_MS > 0
     // A keyboard owns its return screen and group until its completion callback.
@@ -16238,6 +16341,9 @@ static void updateAutoReturnHome() {
 // ════════════════════════════════════════════════════════════════
 #if defined(ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST) && ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST
 #include "../tests/scan_session_device_test.h"
+#endif
+#if defined(ROGUE_RADAR_KNOWN_DEVICE_TEST) && ROGUE_RADAR_KNOWN_DEVICE_TEST
+#include "../tests/known_devices_device_test.h"
 #endif
 
 void setup() {
@@ -16374,6 +16480,9 @@ void setup() {
 #if defined(ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST) && ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST
     scanSessionDeviceTestBegin();
 #endif
+#if defined(ROGUE_RADAR_KNOWN_DEVICE_TEST) && ROGUE_RADAR_KNOWN_DEVICE_TEST
+    known_device_test::begin();
+#endif
     Serial.println("====================================");
     Serial.println();
 }
@@ -16395,8 +16504,13 @@ void loop() {
     processBackShortcut();
     processSignalTracker();
     processScanSession();
+    processNearbySignals();
+    processKnownDevices();
 #if defined(ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST) && ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST
     scanSessionDeviceTestProcess();
+#endif
+#if defined(ROGUE_RADAR_KNOWN_DEVICE_TEST) && ROGUE_RADAR_KNOWN_DEVICE_TEST
+    known_device_test::process();
 #endif
 
     // Keyboard OK/Back safety: finish after LVGL event handling and after

@@ -53,3 +53,18 @@ memory metrics over serial. Mode overrides are transient and do not write
 saved preferences. Leave the controls untouched during the run, and restore
 the normal build afterward. This diagnostic checks lifecycle behavior, not
 the accuracy of every detector against known RF fixtures.
+
+The host runner also exercises the SD record store and interrupted-write
+recovery, bounded Nearby ranking/history, near/away/near learning evidence,
+neighbor ambiguity, explicit exclusions, and discovery radio handoffs.
+
+`-DROGUE_RADAR_KNOWN_DEVICE_TEST=1` enables the separate physical-board
+diagnostic in `known_devices_device_test.h`. It creates and deletes only its
+own temporary SD record, then accepts serial commands to exercise the real
+Nearby, Learn, Saved, and Track pages. `status` reports candidates, learning
+samples and memory; `select N`, `learn`, `capture`, and `next` operate the capture stages.
+Movement must be performed by a person between stages. The fixture-specific
+`save-myamazfit` command is only for the user's authorized Amazfit test and
+requires a consistent completed capture. Restore normal firmware afterward;
+release builds expose none of these commands. Simulated signal tests do not
+establish a real-world identification success rate.

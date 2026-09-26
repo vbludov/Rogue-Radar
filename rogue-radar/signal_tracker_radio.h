@@ -51,7 +51,7 @@ class SignalTrackerRadio {
     return true;
   }
 
-  bool beginBle(const char *mac) {
+  bool beginBle(const char *mac, uint8_t addressType = 255) {
     stop();
     if (bleDrainPending_ && !drainBleScan(0)) {
       status_ = "BLE scan cleanup pending";
@@ -61,6 +61,7 @@ class SignalTrackerRadio {
       status_ = "Invalid BLE address";
       return false;
     }
+    targetBleAddressType_ = addressType;
 
     // The tracker UI normally initializes BLE first. BLEDevice::init() is
     // idempotent in the pinned Arduino BLE library, so this also makes the
@@ -311,7 +312,9 @@ class SignalTrackerRadio {
     if (accept) {
       BLEAddress address = device.getAddress();
       const uint8_t *native = *address.getNative();
-      if (native != nullptr && memcmp(native, targetMac_, 6) == 0) {
+      if (native != nullptr && memcmp(native, targetMac_, 6) == 0 &&
+          (targetBleAddressType_ == 255 ||
+           static_cast<uint8_t>(device.getAddressType()) == targetBleAddressType_)) {
         publishSample(device.getRSSI());
       }
     }
@@ -401,6 +404,7 @@ class SignalTrackerRadio {
   portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
   Mode mode_ = Mode::Idle;
   uint8_t targetMac_[6] = {};
+  uint8_t targetBleAddressType_ = 255;
   bool sampleReady_ = false;
   int sampleRssi_ = 0;
   const char *status_ = "Idle";

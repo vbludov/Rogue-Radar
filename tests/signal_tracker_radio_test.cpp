@@ -156,7 +156,8 @@ void testAsyncWifiResultAndSample() {
     check(WiFi.lastFilter == targetBytes(), "BSSID filter reaches scan API");
 
     const std::array<uint8_t, 6> other = {{1, 2, 3, 4, 5, 6}};
-    WiFi.complete({{other, -20, 1}, {targetBytes(), -61, 11}});
+    WiFi.complete({{other, -20, 1, "other"},
+                   {targetBytes(), -61, 11, "target"}});
     radio.poll();
     int sample = 0;
     check(radio.takeSample(sample) && sample == -61,
@@ -299,6 +300,34 @@ void testBleLifecycleUsesCallbackWithoutStoredResults() {
           "BLE stop restores normal scanner settings");
 }
 
+void testBleAddressTypeFilterAndLegacyWildcard() {
+    resetFakes();
+    SignalTrackerRadio radio;
+    check(radio.beginBle(kTarget, 1), "typed BLE tracking starts");
+    BLEAdvertisedDevice wrongType(targetBytes(), -41);
+    wrongType.setAddressType(0);
+    fakeBleScan.callbacks->onResult(wrongType);
+    int sample = 0;
+    check(!radio.takeSample(sample),
+          "same BLE address with a different address type is rejected");
+    BLEAdvertisedDevice exactType(targetBytes(), -62);
+    exactType.setAddressType(1);
+    fakeBleScan.callbacks->onResult(exactType);
+    check(radio.takeSample(sample) && sample == -62,
+          "same BLE address with the selected address type is accepted");
+    radio.stop();
+
+    resetFakes();
+    SignalTrackerRadio legacy;
+    check(legacy.beginBle(kTarget), "legacy BLE tracking starts with wildcard type");
+    BLEAdvertisedDevice anyType(targetBytes(), -73);
+    anyType.setAddressType(0);
+    fakeBleScan.callbacks->onResult(anyType);
+    check(legacy.takeSample(sample) && sample == -73,
+          "legacy wildcard accepts a matching BLE address of any type");
+    legacy.stop();
+}
+
 void testBleReleaseWaitsForInquiryCompletion() {
     resetFakes();
     fakeBleDoneDelayMs = 1000;
@@ -345,6 +374,7 @@ int main() {
     testReadyToReleaseGatesLegacyScanner();
     testLongDelayedCompletionQueuesReentry();
     testBleLifecycleUsesCallbackWithoutStoredResults();
+    testBleAddressTypeFilterAndLegacyWildcard();
     testBleReleaseWaitsForInquiryCompletion();
     testBleStopFailureRetainsOwnership();
     if (failures != 0) {

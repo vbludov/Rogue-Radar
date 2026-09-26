@@ -24,6 +24,7 @@ static bool trackerIsBle = false;
 static bool trackerAudio = false;
 static bool trackerLight = true;
 static bool trackerHasSample = false;
+static char trackerTargetName[33] = {};
 static bool trackerExitPending = false;
 static uint8_t trackerVolume = 20;
 static uint32_t trackerLastPaint = 0;
@@ -133,7 +134,10 @@ static void processSignalTracker() {
         const char *status = trackerRadio.status();
         if (strncmp(status, "Tracking", 8) == 0 || strncmp(status, "Sweeping", 8) == 0)
             status = "Waiting for signal";
-        lv_label_set_text(trackerStatusLabel, trackerHasSample ? "Signal lost / searching" : status);
+        if (trackerHasSample || strcmp(status, "Waiting for signal") == 0)
+            lv_label_set_text_fmt(trackerStatusLabel, "Waiting for %.32s%s",
+                                  trackerTargetName, trackerHasSample ? " (signal lost)" : "");
+        else lv_label_set_text(trackerStatusLabel, status);
         lv_obj_clear_flag(trackerStatusLabel, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -215,10 +219,12 @@ static lv_obj_t *trackerIconSlash(lv_obj_t *button, bool bulb) {
     return slash;
 }
 
-static void createSignalTracker(bool isBle, const char *name, const char *mac, uint8_t channel) {
+static void createSignalTracker(bool isBle, const char *name, const char *mac, uint8_t channel,
+                                uint8_t addressType) {
     if (signalTrackerActive || lv_display_get_screen_prev(lvDisp)) return;
     trackerIsBle = isBle;
     trackerReturnScreen = lv_screen_active();
+    snprintf(trackerTargetName, sizeof(trackerTargetName), "%s", name && name[0] ? name : mac);
     trackerReturnGroup = lv_indev_get_group(lvIndev);
     trackerModel.reset(millis());
     trackerHasSample = false;
@@ -236,7 +242,7 @@ static void createSignalTracker(bool isBle, const char *name, const char *mac, u
         BLEDevice::init("");
         bleInitialized = true;
     }
-    if (isBle) trackerRadio.beginBle(mac);
+    if (isBle) trackerRadio.beginBle(mac, addressType);
     else trackerRadio.beginWifi(mac, channel);
 
     trackerScreen = lv_obj_create(nullptr);

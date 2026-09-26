@@ -2,6 +2,9 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include <string>
+
+#include "Arduino.h"
 
 #define WIFI_SCAN_RUNNING (-1)
 #define WIFI_SCAN_FAILED  (-2)
@@ -10,6 +13,7 @@ struct FakeWifiResult {
     std::array<uint8_t, 6> bssid;
     int rssi;
     int channel;
+    std::string ssid;
 };
 
 class FakeWiFiClass {
@@ -21,9 +25,12 @@ public:
     int16_t scanNetworks(bool async, bool showHidden, bool passive,
                          uint32_t dwellMs, uint8_t channel,
                          const char *ssid, const uint8_t *bssid);
+    int16_t scanNetworks(bool async, bool showHidden, bool passive,
+                         uint32_t dwellMs, uint8_t channel);
     const uint8_t *BSSID(int16_t index) const;
     int RSSI(int16_t index) const;
     int channel(int16_t index) const;
+    String SSID(int16_t index) const;
 
     void reset();
     void complete(const std::vector<FakeWifiResult> &newResults);

@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.11 | CC1101 test build | Adds SD-backed Saved Devices, guided Learn a Known Device capture, Nearby Signals, and reopening named targets in Track Signal; live discovery and Amazfit learning tested, SD persistence awaiting card detection |
 | v1.1.0-cc1101.10 | CC1101 test build | Adds Timed/Continuous scan sessions, Start/Stop, compact alert toggles, safe detail/tracker handoffs, and protection from inactivity timeout |
 | v1.1.0-cc1101.9 | CC1101 test build | Adds main-menu Power On/Off with confirmation, BQ25896 battery shutdown, USB guard, and power-on instructions |
 | v1.1.0-cc1101.8 | CC1101 test build | Protects keyboard editing from idle home cleanup, clears retired menu references, and fixes stale transition state when opening the keyboard |
@@ -33,7 +34,7 @@
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
 >
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.10` — automated lifecycle tests passed on the CC1101 device.
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.11` — host validation is in progress; physical device verification is pending.
 ---
 
 ## Overview
@@ -86,6 +87,11 @@ It is designed around fast menu navigation, onboard scanning tools, live signal 
 - **Tesla Detector** – detects Tesla-style BLE name patterns and shows name, MAC, RSSI, age, signal quality, and detail view.
 - **Skimmer Detector** – checks for suspicious BLE serial/module names including HC-03, HC-05, HC-06, HC-08, BT-HC05, JDY-31, AT-09, HM-10, CC41-A, MLT-BT05, SPP-CA, and FFD0.
 - **Meta Detector** – looks for Meta / Ray-Ban smart-glasses related BLE advertisements.
+
+### Saved and Nearby Devices
+- **Saved Devices — Find and Track Known Devices** – saves named Wi-Fi or BLE targets on the SD card and reopens a confirmed address in Track Signal for live chart, LED ring, and optional audio guidance.
+- **Learn a Known Device** – guides a near/away/near signal exercise, shows the strength response and possible matches, and requires explicit confirmation before saving or associating an address.
+- **Nearby Signals** – provides separate Wi-Fi and BLE views ranked by smoothed recent signal strength, with history, trend, saved-target markers, Track, Save, and Associate actions.
 
 ### GPS Tools
 - **GPS Stats** – displays live latitude, longitude, speed, altitude, and satellite data.
@@ -257,6 +263,8 @@ The APA102 LEDs are also used for menu color feedback and scan animations. Optio
 - Multi-category tool layout
 - WiFi scanning and monitoring tools
 - BLE scanning and device-type detection
+- SD-backed named Wi-Fi/BLE targets and live locating through Track Signal
+- Guided near/away/near learning and signal-ranked Nearby Signals views
 - GPS live stats
 - SD card firmware update path
 - Adjustable display brightness and inactivity dimming
@@ -293,19 +301,9 @@ __METHOD 2__ <br>
 
 ## Roadmap Ideas
 
-Planned next, in this order (not yet implemented):
-
-1. **Saved Devices — Find and Track Known Devices:** save a known Wi-Fi or BLE
-   device on the SD card with a custom name, then select it later to locate it through
-   Track Signal's live chart, LED ring meter, and optional audio guidance.
-2. **Learn a Known Device:** select a nearby candidate and save its advertised
-   details; associate additional observed addresses with explicit confirmation.
-   Similar advertisements suggest possible matches, not confirmed identities.
-3. **Nearby Signals:** discover Wi-Fi access points and BLE advertisers in a
-   stable, signal-ranked list, then track a result or save it for future locating.
-
-See the [feature plan](FEATURE_PLAN.md) for descriptions, storage, identity
-limitations, and documentation wording.
+Saved Devices, Learn a Known Device, and Nearby Signals are implemented in
+`v1.1.0-cc1101.11`. See the [feature plan](FEATURE_PLAN.md) for storage,
+workflow, identity limits, and the remaining physical validation work.
 
 Other ideas:
 
@@ -350,6 +348,53 @@ Rogue Radar would not be possible without the work and inspiration from these pr
 - **0xXyc / flock-you-wifi-recon**  
   Credit to 0xXyc for the flock-you-wifi-recon project, which helped inspire Rogue Radar’s expanded Flock detection improvements, including Flock-related MAC/OUI matching, confidence labels, method labels, BLE manufacturer ID checks, and improved Flock Hybrid detail handling. This project is also helping guide the upcoming Raven Detector feature planned for Rogue Radar.  
   https://github.com/0xXyc/flock-you-wifi-recon
+
+## Saved Devices, learning, and nearby signals
+
+**Saved Devices — Find and Track Known Devices** stores a custom name, radio
+type, confirmed address, advertised details, and last-seen data on the SD card.
+Open a saved entry later to find and locate it with Track Signal's live chart,
+LED ring, and optional audio guidance. If several confirmed addresses are seen,
+the firmware asks which one to track and does not combine their RSSI readings.
+
+The library uses bounded, versioned, CRC-checked files under its own SD
+directory. Updates use temporary and last-known-good files for recovery. A
+missing or unreadable card makes the saved library unavailable; the firmware
+does not silently create a second copy in internal flash. Live scanning and
+unsaved tracking remain available.
+
+**Learn a Known Device** starts from a selected nearby Wi-Fi or BLE signal and
+guides a near/away/near capture. Position the target first, press **Capture**,
+hold it still, then press **Next** after capture finishes. Return to the same
+near position and orientation for the final phase. Each capture stops once
+enough evidence is collected, or after 30 seconds with an insufficient-sample
+message. You can mark other visible signals as excluded
+neighbors. The result reports whether the selected signal changed consistently
+with the exercise and can show advertisement-based possible matches. These are
+search aids only. The device never merges, relinks, saves, or begins tracking a
+candidate without an explicit user action.
+
+BLE addresses can rotate, advertised names and payloads can be shared, and RSSI
+does not establish precise distance, direction, identity, or ownership.
+Resolving private BLE addresses would require pairing identity material that
+this feature does not have. New addresses therefore require explicit
+association with a saved device.
+
+**Nearby Signals** provides separate Wi-Fi and BLE lists ranked by smoothed
+recent RSSI. Rows show name or address, recent history, trend, and saved status;
+selecting a row offers Track, Save, and association actions. Ordering freezes
+while navigating so the selected row stays stable.
+
+Both `v1.1.0-cc1101.11` firmware profiles build, with passing host storage,
+signal, radio, and UI lifecycle tests. CC1101 live discovery, Track/Back
+handoffs, and controlled Amazfit Band 7 learning passed. Physical SD writes
+remain unverified because the tested cards did not respond to initialization.
+SD/display sharing, restart persistence, saved-entry tracking/reacquisition,
+and saved-entry Pocket Mode need a working card; see [validation status](FEATURE_PLAN.md#validation-status).
+
+For CC1101 card-detection failures, LilyGo recommends a **SanDisk microSD card
+of 32 GB or smaller** in its [hardware FAQ](https://github.com/Xinyuan-LilyGO/T-Embed-CC1101#unable-to-detect-sd-card).
+Formatting cannot fix a card that never responds to initial SPI commands.
 
 ## Timed and Continuous scanning
 

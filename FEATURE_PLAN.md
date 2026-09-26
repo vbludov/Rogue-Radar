@@ -1,8 +1,9 @@
 # Saved Devices, Learn a Known Device, and Nearby Signals
 
-Status: planned; these features are not implemented in the current firmware.
-Implementation order: Saved Devices first, then Learn a Known Device, then
-Nearby Signals. They build on the existing Track Signal feature.
+Status: implemented in `v1.1.0-cc1101.11`; host tests cover storage, signal
+models, and Saved UI lifecycle. Live discovery and controlled Amazfit learning
+have passed on CC1101. Physical SD persistence remains blocked by card detection. These features
+build on the existing Track Signal feature.
 
 ## Saved Devices — Find and Track Known Devices
 
@@ -15,7 +16,7 @@ Finding and tracking known devices is the primary purpose of Saved Devices.
 Its saved list provides a direct starting point for locating a previously
 identified device, without first finding it again in a discovery list.
 
-### Planned behavior
+### Implemented behavior
 
 - Save the selected device's custom name, Wi-Fi/BLE type, observed address,
   and last-seen information on the SD card as the primary saved-device library.
@@ -50,11 +51,11 @@ records before accepting them. Test interrupted writes, card removal, malformed
 files, and a full card. Batch observation updates instead of writing on every
 scan result. Validate SD access alongside display updates on the shared SPI bus.
 
-The first delivery covers saving/naming a selected target, listing saved
-devices, reopening Track Signal, renaming/deleting entries, and persistence
-across restarts. Verify waiting, signal loss/reacquisition, and Pocket Mode
-before adding the learning workflow. A dedicated backup/restore menu can follow
-the core flow; copying the library files provides the initial backup method.
+The implementation covers saving and naming a selected target, paginated
+listing, reopening Track Signal, renaming and deleting entries, and recoverable
+SD persistence. Records support up to eight explicitly confirmed addresses.
+A dedicated backup/restore menu can follow the core flow; copying the library
+files provides the initial backup method.
 
 ### Identity and locating limits
 
@@ -72,7 +73,7 @@ Help associate a nearby Wi-Fi access point or BLE advertiser with a named saved
 device, and add further observed addresses only with the user's confirmation.
 This extends Saved Devices — Find and Track Known Devices.
 
-### Planned workflow
+### Implemented workflow
 
 1. Open Learn a Known Device, place the radar near the intended device, and
    choose a candidate from a nearby scan. Proximity and signal strength help
@@ -86,6 +87,17 @@ This extends Saved Devices — Find and Track Known Devices.
    which observed address is active; do not combine simultaneous advertisers'
    RSSI readings into one chart. Require selection if several addresses are
    present, and reset history if the tracked address changes.
+
+The guided capture uses three explicit phases: near the selected device, away
+from it, then near it again. Position the target first, then press **Capture**
+for each phase. Sampling freezes once the minimum observation period and fresh
+sample count are met, so moving or waiting between phases does not contaminate
+the readings. An insufficient capture stops after 30 seconds and can still be
+reviewed; it is never reported as a successful identification. Use **Next** to
+advance. The result describes only whether the selected
+signal responded consistently to that movement. Nearby signals can be marked
+as exclusions during the exercise. Neither a consistent response nor an
+excluded neighbor proves identity; Save and Associate remain explicit actions.
 
 Similar advertisement details may suggest **Possible matches**, but must never
 automatically merge devices, relink addresses, or start tracking an unconfirmed
@@ -108,12 +120,34 @@ Discover nearby Wi-Fi access points or BLE advertisers in separate views ranked
 by smoothed recent signal strength. Each row shows a name or address fallback,
 current RSSI, a compact signal-history chart, and a rising/falling indicator.
 
-Refresh rankings periodically and freeze ordering while navigating so selection
-remains stable. Selecting a result offers Track Signal, Save Device, and access
-to Learn a Known Device for a confirmed association. Mark
-saved targets with a star and display their custom names. The initial chart
-placement is beside the name; a faint background chart remains a visual option
-if it preserves readability on the device display.
+Rankings refresh periodically and freeze while navigating so selection remains
+stable. Selecting a result offers Track Signal, Save Device, and access to
+Learn a Known Device for a confirmed association. Saved targets use a star and
+their custom name. Rows include a compact recent-history trace and trend.
+
+## Validation status
+
+Host tests cover fixed-capacity signal history and ranking, the guided learning
+model, storage CRUD, pagination, malformed records, interrupted-write recovery,
+card unavailability, full media, and delete tombstones. The SD library uses
+versioned, CRC-validated, file-per-record storage with temporary and
+last-known-good recovery files; it does not fall back to internal flash.
+
+On 2026-09-26, both firmware profiles built and all host suites passed. CC1101
+live tests exercised Wi-Fi/BLE discovery, Nearby/Track/Back, unavailable-card
+handling, and controlled learning with an Amazfit Band 7. Its near/away/near
+means were -37/-76/-41 dBm (8/8/9 fresh samples), yielding a consistent response
+without a qualifying ambiguous neighbor. The earlier capture, interrupted by
+card handling, correctly returned inconsistent near readings. A single device
+test does not establish a general identification success rate.
+
+Physical SD persistence is not verified: three tested cards failed initial
+SPI communication, including an isolated test without display or radios on
+both SPI controllers. No device was saved and no card was formatted by the
+firmware. A working/seated card is needed for SD/display sharing, restart
+persistence, and saved-entry tracking/reacquisition/Pocket Mode checks.
+Original T-Embed runtime checks also remain pending. `v1.1.0-cc1101.11`
+therefore remains a test build.
 
 ## Description and documentation wording
 
@@ -124,4 +158,5 @@ as its explanatory text where space permits.
 
 Whenever a description introduces Saved Devices, explain that the user can
 reopen a named, previously saved target to find and locate it through live
-signal guidance. Keep the planned/implemented status explicit until delivery.
+signal guidance. Keep the pending physical-validation status explicit until
+that work is complete.

@@ -32,3 +32,10 @@ cxx=${CXX:-g++}
     "$repo_root/tests/cc1101_power_test.cpp" \
     -o "$tmp_dir/cc1101_power_test"
 "$tmp_dir/cc1101_power_test"
+
+for suite in known_device_store known_signal_model known_device_discovery; do
+    "$cxx" -std=c++11 -Wall -Wextra -Werror \
+        -I"$repo_root/tests/radio_stubs" \
+        "$repo_root/tests/${suite}_test.cpp" -o "$tmp_dir/${suite}_test"
+    "$tmp_dir/${suite}_test"
+done
