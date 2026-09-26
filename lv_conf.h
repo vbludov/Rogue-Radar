@@ -17,6 +17,7 @@
 #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
 
 #define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_12 1
 #define LV_FONT_MONTSERRAT_20 1
 #define LV_USE_CHART 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14

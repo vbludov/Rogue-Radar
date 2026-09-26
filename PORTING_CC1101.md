@@ -213,6 +213,13 @@ without a reading, it shows signal lost and stops the meter/beeps; reacquisition
 resets smoothing and builds a fresh trend. Signal strength is not distance or
 direction, and reflections/antenna orientation can affect it.
 
+In v1.1.0-cc1101.5, RSSI shares the identity/history row and the live chart grows
+from 62 to 86 pixels high. The separate tracking-status row is removed. RSSI
+uses the theme's success color for a strengthening signal and warning color for
+a weakening signal. Waiting/lost/stopping messages appear inside the chart only
+when needed; a live signal leaves the chart unobstructed.
+Both board builds and CC1101 flash/boot verification passed for this layout.
+
 The encoder ring fills blue through yellow to green as the smoothed signal
 strengthens. Compact speaker and lightbulb buttons toggle guidance audio and
 the tracking ring independently; a diagonal slash means disabled. Their enabled

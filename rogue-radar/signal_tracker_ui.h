@@ -11,7 +11,7 @@ static lv_group_t *trackerGroup = nullptr;
 static lv_obj_t *trackerReturnScreen = nullptr;
 static lv_group_t *trackerReturnGroup = nullptr;
 static lv_obj_t *trackerRssiLabel = nullptr;
-static lv_obj_t *trackerTrendLabel = nullptr;
+static lv_obj_t *trackerStatusLabel = nullptr;
 static lv_obj_t *trackerChart = nullptr;
 static lv_chart_series_t *trackerRawSeries = nullptr;
 static lv_chart_series_t *trackerSmoothSeries = nullptr;
@@ -63,7 +63,7 @@ static void stopSignalTracker() {
     signalTrackerActive = false;
     trackerRadio.stop();
     deleteGroup(&trackerGroup);
-    trackerRssiLabel = trackerTrendLabel = trackerChart = nullptr;
+    trackerRssiLabel = trackerStatusLabel = trackerChart = nullptr;
     trackerRawSeries = trackerSmoothSeries = nullptr;
     trackerAudioLabel = trackerVolumeLabel = nullptr;
     trackerLightLabel = nullptr;
@@ -87,7 +87,8 @@ static void cb_trackerBack(lv_event_t *) {
     if (trackerExitPending || lv_display_get_screen_prev(lvDisp)) return;
     trackerExitPending = true;
     trackerRadio.stop();
-    lv_label_set_text(trackerTrendLabel, "Stopping scan...");
+    lv_label_set_text(trackerStatusLabel, "Stopping scan...");
+    lv_obj_clear_flag(trackerStatusLabel, LV_OBJ_FLAG_HIDDEN);
     // Do not expose the legacy scanner until its canceled predecessor's
     // asynchronous completion has been consumed. The display stays responsive.
     if (trackerRadio.readyToRelease()) finishTrackerBack();
@@ -117,17 +118,22 @@ static void processSignalTracker() {
     const uint8_t strength = trackerModel.strengthPercent(now);
     if (fresh) {
         lv_label_set_text_fmt(trackerRssiLabel, "%d dBm", raw);
-        const char *trend = "Building trend";
+        lv_color_t readingColor = TC(text);
         switch (trackerModel.trend(now)) {
-            case rogue_radar::SignalTrend::Stronger: trend = "Getting stronger"; break;
-            case rogue_radar::SignalTrend::Weaker: trend = "Getting weaker"; break;
-            case rogue_radar::SignalTrend::Steady: trend = "Steady"; break;
+            case rogue_radar::SignalTrend::Stronger: readingColor = TC(success); break;
+            case rogue_radar::SignalTrend::Weaker: readingColor = TC(warn); break;
             default: break;
         }
-        lv_label_set_text(trackerTrendLabel, trend);
+        lv_obj_set_style_text_color(trackerRssiLabel, readingColor, 0);
+        lv_obj_add_flag(trackerStatusLabel, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_label_set_text(trackerRssiLabel, "-- dBm");
-        lv_label_set_text(trackerTrendLabel, trackerHasSample ? "Signal lost / searching" : trackerRadio.status());
+        lv_obj_set_style_text_color(trackerRssiLabel, TC(textDim), 0);
+        const char *status = trackerRadio.status();
+        if (strncmp(status, "Tracking", 8) == 0 || strncmp(status, "Sweeping", 8) == 0)
+            status = "Waiting for signal";
+        lv_label_set_text(trackerStatusLabel, trackerHasSample ? "Signal lost / searching" : status);
+        lv_obj_clear_flag(trackerStatusLabel, LV_OBJ_FLAG_HIDDEN);
     }
 
     rgb_color frame[NUM_LEDS] = {};
@@ -244,22 +250,19 @@ static void createSignalTracker(bool isBle, const char *name, const char *mac, u
     lv_obj_t *identity = lv_label_create(trackerScreen);
     lv_label_set_text_fmt(identity, "%s  |  30s history", mac);
     lv_obj_set_pos(identity, 6, 28);
+    lv_obj_set_width(identity, 212);
+    lv_label_set_long_mode(identity, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(identity, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(identity, TC(textDim), 0);
     trackerRssiLabel = lv_label_create(trackerScreen);
-    lv_obj_set_pos(trackerRssiLabel, 6, 46);
-    lv_obj_set_style_text_font(trackerRssiLabel, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(trackerRssiLabel, 222, 27);
+    lv_obj_set_width(trackerRssiLabel, SCREEN_W - 228);
+    lv_obj_set_style_text_align(trackerRssiLabel, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_color(trackerRssiLabel, TC(text), 0);
     lv_label_set_text(trackerRssiLabel, "-- dBm");
-    trackerTrendLabel = lv_label_create(trackerScreen);
-    lv_obj_set_pos(trackerTrendLabel, 118, 50);
-    lv_obj_set_width(trackerTrendLabel, SCREEN_W - 122);
-    lv_label_set_long_mode(trackerTrendLabel, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_color(trackerTrendLabel, TC(accent), 0);
-    lv_label_set_text(trackerTrendLabel, "Waiting for signal");
-
     trackerChart = lv_chart_create(trackerScreen);
-    lv_obj_set_pos(trackerChart, 36, 72);
-    lv_obj_set_size(trackerChart, SCREEN_W - 43, 62);
+    lv_obj_set_pos(trackerChart, 36, 48);
+    lv_obj_set_size(trackerChart, SCREEN_W - 43, 86);
     lv_obj_clear_flag(trackerChart, LV_OBJ_FLAG_SCROLLABLE);
     lv_chart_set_type(trackerChart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(trackerChart, rogue_radar::SignalTrackerModel::kBucketCount);
@@ -274,8 +277,16 @@ static void createSignalTracker(bool isBle, const char *name, const char *mac, u
     trackerSmoothSeries = lv_chart_add_series(trackerChart, TC(accent), LV_CHART_AXIS_PRIMARY_Y);
     lv_chart_set_all_value(trackerChart, trackerRawSeries, LV_CHART_POINT_NONE);
     lv_chart_set_all_value(trackerChart, trackerSmoothSeries, LV_CHART_POINT_NONE);
+    // Status uses the chart only while waiting/lost/stopping, never a dedicated row.
+    trackerStatusLabel = lv_label_create(trackerChart);
+    lv_obj_set_width(trackerStatusLabel, SCREEN_W - 55);
+    lv_label_set_long_mode(trackerStatusLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(trackerStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(trackerStatusLabel, TC(textDim), 0);
+    lv_label_set_text(trackerStatusLabel, "Waiting for signal");
+    lv_obj_center(trackerStatusLabel);
     lv_obj_t *high = lv_label_create(trackerScreen);
-    lv_label_set_text(high, "-30"); lv_obj_set_pos(high, 3, 71);
+    lv_label_set_text(high, "-30"); lv_obj_set_pos(high, 3, 47);
     lv_obj_set_style_text_color(high, TC(textDim), 0);
     lv_obj_t *low = lv_label_create(trackerScreen);
     lv_label_set_text(low, "-100"); lv_obj_set_pos(low, 0, 119);
