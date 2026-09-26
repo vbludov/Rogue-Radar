@@ -126,6 +126,30 @@ application partition limit in the linker size report.
 
 ## Current milestone hardware validation
 
+### Top-button Back shortcut (v1.1.0-cc1101.1)
+
+LilyGO identifies the separate top button as `BOARD_USER_KEY`, GPIO6,
+active-low (`examples/utilities.h` and `examples/encode_test/encode_test.ino`
+in the official T-Embed-CC1101 repository). The CC1101 profile configures it
+with `INPUT_PULLUP`; the original T-Embed profile does not configure this pin
+as an input because it is used by its speaker.
+
+Press and release the top button to invoke the current screen's Back action.
+It cancels an open keyboard through the existing deferred Esc path, and does
+nothing on the main menu. A held button does not repeat. Input is debounced
+on release; presses during a screen transition or simultaneous encoder click
+are ignored. During a blocking scan, the interrupt records the press and the
+main loop dispatches Back only after the scan has returned. It does not
+interrupt a firmware update or cancel a blocking radio scan midway.
+
+Validation: try Wi-Fi and BLE submenus, Network Scanner, a device detail
+screen, WiFi Mapper, and a settings page. Confirm one level per press, no
+repeat while held, no action on the home screen, and keyboard cancellation
+without applying text. Also check Back after a scan and the encoder's normal
+operation. Build validation alone does not establish these hardware results.
+
+### General hardware checks
+
 1. Confirm the boot log reports the intended board profile, 16 MB flash,
    external PSRAM, and adequate free heap.
 2. Confirm the splash and LVGL menus render at 320x170 with correct rotation,

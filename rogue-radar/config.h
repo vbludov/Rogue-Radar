@@ -9,7 +9,11 @@
 
 // ─── Device Name / Firmware Version ─────────────────────────────
 #define DEVICE_NAME       "Rogue Radar"
+#if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+#define FIRMWARE_VERSION  "RR v1.1.0-cc1101.1"
+#else
 #define FIRMWARE_VERSION  "RR v1.0.5"
+#endif
 
 // ─── Device Type ─────────────────────────────
 #define DEVICE_TYPE       RR_BOARD_NAME

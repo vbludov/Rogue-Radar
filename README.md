@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.1 | CC1101 test build | Adds T-Embed CC1101 board support and top-button Back shortcut (GPIO6), including keyboard cancel; fixes Wi-Fi tool re-entry crash; preserves the original T-Embed build |
 | v1.0.5 | Stable | Adds Smart Charger Monitor, adds Audio Tools with SD WAV saving, on-device recordings browser, selected-file playback, on-device delete, improved Sound Recorder SD diagnostics, and Sound Recorder UI/stability cleanup |
 | v1.0.4 | Stable | Adds Audio Tools with Sound Recorder, Connect to AP, LAN Host Discovery, Gateway Info, WiFi Mapper, Station Scanner, Raven Detector, improved Flock detection, menu-based Power Off, and general UI/stability cleanup |
 | v1.0.3 | Stable | Adds battery display, adds Menu Feedback Volume and Alert Sound Volume controls, adds Deauth Stats, expands Pwnagotchi Watch details, improves Device Info and other features, and fixes theme focus styling |
@@ -22,6 +23,8 @@
 | v1.0.0 | Stable | Initial public release of the Rogue Radar Firmware |
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
+>
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.1` — hardware testing in progress.
 ---
 
 ## Overview
@@ -233,7 +236,8 @@ Rogue Radar is built around a **rotary encoder driven interface** using LVGL inp
 ### Controls
 - **Rotate encoder** to move through menus and lists
 - **Press encoder** to select items
-- **Hold encoder button for 5 seconds** to trigger power-off handling
+- **T-Embed CC1101 top button:** press and release to go Back one level, or cancel text entry. It does nothing on the main menu. During a blocking scan, Back is deferred until the scan returns; holding the button does not repeat.
+- **Power Off** is available through Misc Tools on supported board profiles.
 
 The APA102 LEDs are also used for menu color feedback and scan animations. Optional speaker feedback can provide detection chirps and quiet menu tick/click sounds.
 

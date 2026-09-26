@@ -1962,6 +1962,9 @@ static lv_obj_t *createHeader(lv_obj_t *parent, const char *text) {
 
 static lv_obj_t *createBackBtn(lv_obj_t *parent, lv_event_cb_t cb) {
     lv_obj_t *btn = lv_btn_create(parent);
+    // Identify real Back controls without relying on label text or retaining
+    // pointers to screens which LVGL may later delete.
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_USER_1);
     lv_obj_set_size(btn, 100, 26);
     lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 6, -4);
     lv_obj_set_style_bg_color(btn, TC(btnDefault), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -2254,6 +2257,103 @@ static void processKeyboardDeferredFinish() {
     Serial.printf("[Keyboard] Finish running: %s\n", keyboardFinishAccepted ? "OK" : "Esc");
     keyboardFinish(keyboardFinishAccepted);
 }
+
+#if RR_BACK_BUTTON_PIN >= 0
+static portMUX_TYPE backKeyMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool backKeyPending = false;
+static volatile bool backKeyArmed = false;
+static uint32_t backKeyReleasedAt = 0;
+static bool backKeyObserved = false;
+
+static void IRAM_ATTR onBackButtonPressed() {
+    // Capture even a short press during a blocking scan. Never call LVGL here.
+    portENTER_CRITICAL_ISR(&backKeyMux);
+    if (backKeyArmed) {
+        backKeyPending = true;
+        backKeyArmed = false;
+    }
+    portEXIT_CRITICAL_ISR(&backKeyMux);
+}
+
+static void initBackShortcut() {
+    pinMode(RR_BACK_BUTTON_PIN, INPUT_PULLUP);
+    // A button held during boot must be released before it can navigate.
+    backKeyArmed = (digitalRead(RR_BACK_BUTTON_PIN) == HIGH);
+    attachInterrupt(digitalPinToInterrupt(RR_BACK_BUTTON_PIN), onBackButtonPressed, FALLING);
+}
+
+static lv_obj_t *findActiveBackButton(lv_obj_t *root, lv_group_t *group) {
+    if (!root || lv_obj_has_flag(root, LV_OBJ_FLAG_HIDDEN) ||
+        lv_obj_has_state(root, LV_STATE_DISABLED)) return nullptr;
+    if (lv_obj_has_flag(root, LV_OBJ_FLAG_USER_1) &&
+        lv_obj_has_flag(root, LV_OBJ_FLAG_CLICKABLE) &&
+        lv_obj_get_group(root) == group) return root;
+    // Search topmost children first; only the active input group may act.
+    for (int32_t i = (int32_t)lv_obj_get_child_count(root) - 1; i >= 0; --i) {
+        lv_obj_t *back = findActiveBackButton(lv_obj_get_child(root, i), group);
+        if (back) return back;
+    }
+    return nullptr;
+}
+
+static void processBackShortcut() {
+    const uint32_t now = millis();
+    portENTER_CRITICAL(&backKeyMux);
+    const bool hasPending = backKeyPending;
+    const bool isArmed = backKeyArmed;
+    portEXIT_CRITICAL(&backKeyMux);
+    // A new edge after this snapshot must wait for the next loop and receive
+    // its own release debounce, rather than being consumed by an idle poll.
+    if (!hasPending && isArmed) return;
+    if (hasPending && !backKeyObserved) {
+        // The entire press may have happened while a scan blocked loop().
+        // Start a fresh release-debounce interval when it is first observed.
+        backKeyObserved = true;
+        backKeyReleasedAt = 0;
+    }
+    if (digitalRead(RR_BACK_BUTTON_PIN) == LOW) {
+        backKeyReleasedAt = 0;
+        return;  // Release to navigate; holding never repeats.
+    }
+    if (backKeyReleasedAt == 0) backKeyReleasedAt = now;
+    if (now - backKeyReleasedAt < 30) return;
+    portENTER_CRITICAL(&backKeyMux);
+    const bool pending = backKeyPending;
+    backKeyPending = false;
+    backKeyArmed = true;
+    portEXIT_CRITICAL(&backKeyMux);
+    backKeyObserved = false;
+    if (!pending) return;
+    resetInactivityTimer();
+
+    // Run only from loop(), after LVGL has returned. In particular, never
+    // delete a scan screen from a nested lv_timer_handler inside its scan.
+    // Ignore presses during a transition or an encoder click, just like a
+    // temporarily unavailable Back control; do not queue them for a new page.
+    if (!lvIndev || powerOffTriggered || keyboardFinishPending ||
+        digitalRead(ENCODER_BTN) == LOW ||
+        lv_indev_get_state(lvIndev) == LV_INDEV_STATE_PRESSED ||
+        lv_display_get_screen_prev(lvDisp)) return;
+
+    if (keyboardActive) {
+        keyboardRequestFinish(false);  // Same deferred cancel path as Esc.
+        return;
+    }
+    lv_obj_t *screen = lv_screen_active();
+    if (!screen || screen == mainScreen) return;
+    lv_group_t *group = lv_indev_get_group(lvIndev);
+    if (!group) return;
+    lv_obj_t *back = findActiveBackButton(screen, group);
+    if (!back) return;
+    Serial.println("[Input] Top button: Back");
+    // Reuse each page's cleanup and return callback. Do not touch back after
+    // this event: its callback may remove the button or its containing page.
+    lv_obj_send_event(back, LV_EVENT_CLICKED, nullptr);
+}
+#else
+static void initBackShortcut() {}
+static void processBackShortcut() {}
+#endif
 
 static void cb_keyboardMatrix(lv_event_t *e) {
     lv_obj_t *matrix = (lv_obj_t *)lv_event_get_target(e);
@@ -4699,6 +4799,7 @@ static void createSoundRecorderFileMenu() {
     lv_obj_t *backBtn = soundRecorderMakePopupButton(soundRecorderFileMenuScreen, 13,  btnY, btnW, btnH,
                                                      LV_SYMBOL_LEFT "  Back",
                                                      cb_soundRecorderFileMenuBack, false);
+    lv_obj_add_flag(backBtn, LV_OBJ_FLAG_USER_1);
     lv_obj_t *playBtn = soundRecorderMakePopupButton(soundRecorderFileMenuScreen, 116, btnY, btnW, btnH,
                                                      LV_SYMBOL_PLAY "  Play",
                                                      cb_soundRecorderFileMenuPlay, false);
@@ -5477,6 +5578,7 @@ void createSoundRecorder() {
     lv_obj_add_event_cb(backBtn, cb_audioToolBack, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *backLbl = lv_label_create(backBtn);
     lv_label_set_text(backLbl, LV_SYMBOL_LEFT "  Back");
+    lv_obj_add_flag(backBtn, LV_OBJ_FLAG_USER_1);
     lv_obj_set_style_text_color(backLbl, TC(text), LV_PART_MAIN);
     lv_obj_center(backLbl);
 
@@ -9616,6 +9718,7 @@ void createWiFiMapper() {
     wifiMapperSpeedLbl = lv_obj_get_child(wifiMapperSpeedBtn, 0);
 
     lv_obj_t *backBtn = createMapperBtn(wifiToolScreen, "Back", 234, 80, cb_wifiToolBack);
+    lv_obj_add_flag(backBtn, LV_OBJ_FLAG_USER_1);
 
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
@@ -14742,6 +14845,7 @@ void setup() {
     lvIndev = lv_indev_create();
     lv_indev_set_type(lvIndev, LV_INDEV_TYPE_ENCODER);
     lv_indev_set_read_cb(lvIndev, encoder_read_cb);
+    initBackShortcut();
 
     ledStartupFlash();
     createMainMenu();
@@ -14787,6 +14891,8 @@ void loop() {
 #endif
 
     lv_timer_handler();
+
+    processBackShortcut();
 
     // Keyboard OK/Back safety: finish after LVGL event handling and after
     // the encoder button has physically released.

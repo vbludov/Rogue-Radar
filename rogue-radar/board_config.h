@@ -19,6 +19,7 @@
 #define ENCODER_A               4
 #define ENCODER_B               5
 #define ENCODER_BTN             0
+#define RR_BACK_BUTTON_PIN      6
 
 // The CC1101 board uses an eight-pixel WS2812 chain. APA102 is unsupported.
 #define WS2812_PIN             14
@@ -79,6 +80,7 @@
 #define ENCODER_A               1
 #define ENCODER_B               2
 #define ENCODER_BTN             0
+#define RR_BACK_BUTTON_PIN     -1
 
 #define WS2812_PIN             -1
 #define APA102_DI              42
