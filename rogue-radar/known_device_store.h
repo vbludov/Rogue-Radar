@@ -41,13 +41,13 @@ class KnownDeviceStore {
         if (!ready()) return KnownStoreStatus::Unavailable;
         if (device.id != 0 || !validDevice(device, false)) return KnownStoreStatus::InvalidArgument;
         uint32_t maxId = 0, cursor = 0;
-        char name[80];
+        Workspace &work = workspace();
         for (;;) {
-            KnownFsListResult result = fs_.nextFile(directory(), cursor, name, sizeof(name));
+            KnownFsListResult result = fs_.nextFile(directory(), cursor, work.name, sizeof(work.name));
             if (result == KnownFsListResult::End) break;
             if (result == KnownFsListResult::Error) return KnownStoreStatus::IoError;
             uint32_t id = 0;
-            if (parseRecordName(name, id) && id > maxId) maxId = id;
+            if (parseRecordName(work.name, id) && id > maxId) maxId = id;
         }
         if (maxId == 0xFFFFFFFFUL) return KnownStoreStatus::Full;
         device.id = maxId + 1;
@@ -130,20 +130,21 @@ class KnownDeviceStore {
         KnownDevice &device = scratchDevice();
         KnownStoreStatus status = read(id, device);
         if (status != KnownStoreStatus::Ok) return status;
-        char mainPath[64], tmpPath[64], goodPath[64], delPath[64], deleteTmp[64];
-        paths(id, mainPath, tmpPath, goodPath, delPath);
-        snprintf(deleteTmp, sizeof(deleteTmp), "%s/%08lX.dtmp", directory(), (unsigned long)id);
-        uint8_t marker[20] = {'R','R','K','D','D','E','L',0,1,0,0,0,0,0,0,0,0,0,0,0};
-        put32(marker + 12, id);
-        put32(marker + 16, crcUpdate(0xFFFFFFFFUL, marker, 16) ^ 0xFFFFFFFFUL);
-        fs_.removeFile(deleteTmp);
-        if (!writeBytes(deleteTmp, marker, sizeof(marker)))
+        Workspace &work = workspace();
+        paths(id, work);
+        snprintf(work.extraPath, sizeof(work.extraPath), "%s/%08lX.dtmp", directory(), (unsigned long)id);
+        static const uint8_t markerPrefix[12] = {'R','R','K','D','D','E','L',0,1,0,0,0};
+        memcpy(work.io, markerPrefix, sizeof(markerPrefix));
+        put32(work.io + 12, id);
+        put32(work.io + 16, crcUpdate(0xFFFFFFFFUL, work.io, 16) ^ 0xFFFFFFFFUL);
+        fs_.removeFile(work.extraPath);
+        if (!writeBytes(work.extraPath, work.io, 20))
             return fs_.lastErrorIsFull() ? KnownStoreStatus::Full : KnownStoreStatus::IoError;
-        fs_.removeFile(delPath);
-        if (!fs_.renameFile(deleteTmp, delPath)) return KnownStoreStatus::IoError;
-        const bool mainOk = !fs_.exists(mainPath) || fs_.removeFile(mainPath);
-        const bool tmpOk = !fs_.exists(tmpPath) || fs_.removeFile(tmpPath);
-        const bool goodOk = !fs_.exists(goodPath) || fs_.removeFile(goodPath);
+        fs_.removeFile(work.delPath);
+        if (!fs_.renameFile(work.extraPath, work.delPath)) return KnownStoreStatus::IoError;
+        const bool mainOk = !fs_.exists(work.mainPath) || fs_.removeFile(work.mainPath);
+        const bool tmpOk = !fs_.exists(work.tmpPath) || fs_.removeFile(work.tmpPath);
+        const bool goodOk = !fs_.exists(work.goodPath) || fs_.removeFile(work.goodPath);
         return (mainOk && tmpOk && goodOk) ? KnownStoreStatus::Ok : KnownStoreStatus::RecoveryFailed;
     }
 
@@ -172,28 +173,28 @@ class KnownDeviceStore {
             return KnownStoreStatus::InvalidArgument;
         for (uint8_t i = index + 1; i < device.addressCount; ++i)
             device.addresses[i - 1] = device.addresses[i];
-        device.addresses[--device.addressCount] = KnownAddress{};
+        resetKnownAddress(device.addresses[--device.addressCount]);
         return writeAtomic(device);
     }
 
  private:
     KnownStoreStatus readMounted(uint32_t id, KnownDevice &device) {
         if (id == 0) return KnownStoreStatus::InvalidArgument;
-        char mainPath[64], tmpPath[64], goodPath[64], delPath[64];
-        paths(id, mainPath, tmpPath, goodPath, delPath);
-        if (validTombstone(delPath, id)) return KnownStoreStatus::NotFound;
-        if (decodeValid(mainPath, device) && device.id == id) return KnownStoreStatus::Ok;
-        if (decodeValid(tmpPath, device) && device.id == id) {
-            if (fs_.exists(mainPath)) fs_.removeFile(mainPath);
-            fs_.renameFile(tmpPath, mainPath);
+        Workspace &work = workspace();
+        paths(id, work);
+        if (validTombstone(work.delPath, id)) return KnownStoreStatus::NotFound;
+        if (decodeValid(work.mainPath, device) && device.id == id) return KnownStoreStatus::Ok;
+        if (decodeValid(work.tmpPath, device) && device.id == id) {
+            if (fs_.exists(work.mainPath)) fs_.removeFile(work.mainPath);
+            fs_.renameFile(work.tmpPath, work.mainPath);
             return KnownStoreStatus::Ok;
         }
-        if (decodeValid(goodPath, device) && device.id == id) {
-            if (fs_.exists(mainPath)) fs_.removeFile(mainPath);
-            fs_.renameFile(goodPath, mainPath);
+        if (decodeValid(work.goodPath, device) && device.id == id) {
+            if (fs_.exists(work.mainPath)) fs_.removeFile(work.mainPath);
+            fs_.renameFile(work.goodPath, work.mainPath);
             return KnownStoreStatus::Ok;
         }
-        if (fs_.exists(mainPath) || fs_.exists(tmpPath) || fs_.exists(goodPath))
+        if (fs_.exists(work.mainPath) || fs_.exists(work.tmpPath) || fs_.exists(work.goodPath))
             return KnownStoreStatus::InvalidRecord;
         return KnownStoreStatus::NotFound;
     }
@@ -202,11 +203,26 @@ class KnownDeviceStore {
     static const uint32_t kFileSize = 16 + kPayloadSize;
     KnownDeviceFileSystem &fs_;
 
+    struct Workspace {
+        KnownDevice device;
+        char mainPath[64];
+        char tmpPath[64];
+        char goodPath[64];
+        char delPath[64];
+        char extraPath[64];
+        char name[80];
+        uint8_t io[64];
+    };
+
+    static Workspace &workspace() {
+        // All store operations are synchronous on the UI task. A single static
+        // workspace keeps records, paths, and I/O buffers off its small stack.
+        static Workspace work;
+        return work;
+    }
+
     static KnownDevice &scratchDevice() {
-        // Store calls are synchronous. Keeping this record in static storage avoids
-        // consuming roughly 2.1 KB of the Arduino loop task stack per operation.
-        static KnownDevice scratch;
-        return scratch;
+        return workspace().device;
     }
 
     bool ready() { return fs_.available() && fs_.ensureDirectory(directory()); }
@@ -248,19 +264,20 @@ class KnownDeviceStore {
         return crc;
     }
     bool validTombstone(const char *path, uint32_t id) {
-        uint8_t marker[20]; uint32_t size = 0;
-        return fs_.exists(path) && fs_.fileSize(path, size) && size == sizeof(marker) &&
-               fs_.readAt(path, 0, marker, sizeof(marker)) &&
-               memcmp(marker, "RRKDDEL", 7) == 0 && marker[7] == 0 &&
-               get16(marker + 8) == 1 && get16(marker + 10) == 0 &&
-               get32(marker + 12) == id &&
-               get32(marker + 16) == (crcUpdate(0xFFFFFFFFUL, marker, 16) ^ 0xFFFFFFFFUL);
+        Workspace &work = workspace();
+        uint32_t size = 0;
+        return fs_.exists(path) && fs_.fileSize(path, size) && size == 20 &&
+               fs_.readAt(path, 0, work.io, 20) &&
+               memcmp(work.io, "RRKDDEL", 7) == 0 && work.io[7] == 0 &&
+               get16(work.io + 8) == 1 && get16(work.io + 10) == 0 &&
+               get32(work.io + 12) == id &&
+               get32(work.io + 16) == (crcUpdate(0xFFFFFFFFUL, work.io, 16) ^ 0xFFFFFFFFUL);
     }
-    static void paths(uint32_t id, char *mainPath, char *tmpPath, char *goodPath, char *delPath) {
-        snprintf(mainPath, 64, "%s/%08lX.kdev", directory(), (unsigned long)id);
-        snprintf(tmpPath, 64, "%s/%08lX.tmp", directory(), (unsigned long)id);
-        snprintf(goodPath, 64, "%s/%08lX.lkg", directory(), (unsigned long)id);
-        snprintf(delPath, 64, "%s/%08lX.del", directory(), (unsigned long)id);
+    static void paths(uint32_t id, Workspace &work) {
+        snprintf(work.mainPath, sizeof(work.mainPath), "%s/%08lX.kdev", directory(), (unsigned long)id);
+        snprintf(work.tmpPath, sizeof(work.tmpPath), "%s/%08lX.tmp", directory(), (unsigned long)id);
+        snprintf(work.goodPath, sizeof(work.goodPath), "%s/%08lX.lkg", directory(), (unsigned long)id);
+        snprintf(work.delPath, sizeof(work.delPath), "%s/%08lX.del", directory(), (unsigned long)id);
     }
     static bool parseRecordName(const char *name, uint32_t &id) {
         if (!name) return false;
@@ -281,13 +298,13 @@ class KnownDeviceStore {
     KnownStoreStatus nextRecordId(uint32_t afterId, uint32_t &id) {
         uint32_t cursor = 0;
         uint32_t best = 0xFFFFFFFFUL;
-        char name[80];
+        Workspace &work = workspace();
         for (;;) {
-            KnownFsListResult result = fs_.nextFile(directory(), cursor, name, sizeof(name));
+            KnownFsListResult result = fs_.nextFile(directory(), cursor, work.name, sizeof(work.name));
             if (result == KnownFsListResult::End) break;
             if (result == KnownFsListResult::Error) return KnownStoreStatus::IoError;
             uint32_t candidate = 0;
-            if (parseRecordName(name, candidate) && candidate > afterId && candidate < best)
+            if (parseRecordName(work.name, candidate) && candidate > afterId && candidate < best)
                 best = candidate;
         }
         if (best == 0xFFFFFFFFUL) return KnownStoreStatus::NotFound;
@@ -296,11 +313,17 @@ class KnownDeviceStore {
     }
 
     template <typename Sink> static bool writeFixedString(Sink &sink, const char *value, size_t size) {
-        char normalized[129] = {};
         const size_t length = boundedLength(value, size);
-        if (length >= size || size > sizeof(normalized)) return false;
-        memcpy(normalized, value, length);
-        return sink(normalized, size);
+        if (length >= size) return false;
+        if (length && !sink(value, length)) return false;
+        static const uint8_t zeros[32] = {};
+        size_t remaining = size - length;
+        while (remaining) {
+            const size_t amount = remaining > sizeof(zeros) ? sizeof(zeros) : remaining;
+            if (!sink(zeros, amount)) return false;
+            remaining -= amount;
+        }
+        return true;
     }
     template <typename Sink> static bool visitPayload(const KnownDevice &d, Sink &sink) {
         uint8_t n[4]; put32(n, d.id); if (!sink(n, 4)) return false;
@@ -334,26 +357,31 @@ class KnownDeviceStore {
         return true;
     }
     bool writeRecord(const char *path, const KnownDevice &device) {
-        uint8_t header[16] = {'R','R','K','D',0,0,16,0,0,0,0,0,0,0,0,0};
-        put16(header + 4, kSchemaVersion); put32(header + 8, kPayloadSize); put32(header + 12, payloadCrc(device));
+        Workspace &work = workspace();
+        static const uint8_t headerPrefix[16] = {'R','R','K','D',0,0,16,0,0,0,0,0,0,0,0,0};
+        memcpy(work.io, headerPrefix, sizeof(headerPrefix));
+        put16(work.io + 4, kSchemaVersion); put32(work.io + 8, kPayloadSize); put32(work.io + 12, payloadCrc(device));
         if (!fs_.beginWrite(path)) return false;
-        if (!fs_.appendWrite(header, sizeof(header))) { fs_.abortWrite(); return false; }
+        if (!fs_.appendWrite(work.io, 16)) { fs_.abortWrite(); return false; }
         struct WriteSink { KnownDeviceFileSystem &fs; bool operator()(const void *p, size_t n) { return fs.appendWrite(p, n); } } sink{fs_};
         if (!visitPayload(device, sink) || !fs_.finishWrite()) { fs_.abortWrite(); return false; }
         return true;
     }
     bool decodeValid(const char *path, KnownDevice &device) {
-        uint32_t size = 0; uint8_t header[16];
-        if (!fs_.exists(path) || !fs_.fileSize(path, size) || size != kFileSize || !fs_.readAt(path, 0, header, 16)) return false;
-        if (memcmp(header, "RRKD", 4) != 0 || get16(header + 4) != kSchemaVersion || get16(header + 6) != 16 || get32(header + 8) != kPayloadSize) return false;
-        uint32_t crc = 0xFFFFFFFFUL; uint8_t chunk[64];
+        Workspace &work = workspace();
+        uint32_t size = 0;
+        if (!fs_.exists(path) || !fs_.fileSize(path, size) || size != kFileSize || !fs_.readAt(path, 0, work.io, 16)) return false;
+        if (memcmp(work.io, "RRKD", 4) != 0 || get16(work.io + 4) != kSchemaVersion || get16(work.io + 6) != 16 || get32(work.io + 8) != kPayloadSize) return false;
+        const uint32_t expectedCrc = get32(work.io + 12);
+        uint32_t crc = 0xFFFFFFFFUL;
         for (uint32_t offset = 16; offset < size;) {
-            size_t amount = (size - offset > sizeof(chunk)) ? sizeof(chunk) : (size_t)(size - offset);
-            if (!fs_.readAt(path, offset, chunk, amount)) return false;
-            crc = crcUpdate(crc, chunk, amount); offset += amount;
+            size_t amount = (size - offset > sizeof(work.io)) ? sizeof(work.io) : (size_t)(size - offset);
+            if (!fs_.readAt(path, offset, work.io, amount)) return false;
+            crc = crcUpdate(crc, work.io, amount); offset += amount;
         }
-        if ((crc ^ 0xFFFFFFFFUL) != get32(header + 12)) return false;
-        device = KnownDevice{}; uint32_t offset = 16; uint8_t b4[4], b2[2], b;
+        if ((crc ^ 0xFFFFFFFFUL) != expectedCrc) return false;
+        resetKnownDevice(device);
+        uint32_t offset = 16; uint8_t b4[4], b2[2], b;
 #define RR_READ_FIELD(field) do { if (!fs_.readAt(path, offset, &(field), sizeof(field))) return false; offset += sizeof(field); } while (0)
         if (!fs_.readAt(path, offset, b4, 4)) return false;
         device.id = get32(b4); offset += 4;
@@ -376,27 +404,27 @@ class KnownDeviceStore {
         return offset == size && validDevice(device, true);
     }
     KnownStoreStatus writeAtomic(const KnownDevice &device) {
-        char mainPath[64], tmpPath[64], goodPath[64], delPath[64];
-        paths(device.id, mainPath, tmpPath, goodPath, delPath);
-        fs_.removeFile(tmpPath);
-        if (!writeRecord(tmpPath, device))
+        Workspace &work = workspace();
+        paths(device.id, work);
+        fs_.removeFile(work.tmpPath);
+        if (!writeRecord(work.tmpPath, device))
             return fs_.lastErrorIsFull() ? KnownStoreStatus::Full : KnownStoreStatus::IoError;
         KnownDevice &check = scratchDevice();
-        if (!decodeValid(tmpPath, check)) { fs_.removeFile(tmpPath); return KnownStoreStatus::InvalidRecord; }
-        if (fs_.exists(mainPath)) {
-            fs_.removeFile(goodPath);
-            if (!fs_.renameFile(mainPath, goodPath)) { fs_.removeFile(tmpPath); return KnownStoreStatus::IoError; }
+        if (!decodeValid(work.tmpPath, check)) { fs_.removeFile(work.tmpPath); return KnownStoreStatus::InvalidRecord; }
+        if (fs_.exists(work.mainPath)) {
+            fs_.removeFile(work.goodPath);
+            if (!fs_.renameFile(work.mainPath, work.goodPath)) { fs_.removeFile(work.tmpPath); return KnownStoreStatus::IoError; }
         }
-        if (!fs_.renameFile(tmpPath, mainPath)) {
-            if (!fs_.exists(mainPath) && fs_.exists(goodPath)) fs_.renameFile(goodPath, mainPath);
+        if (!fs_.renameFile(work.tmpPath, work.mainPath)) {
+            if (!fs_.exists(work.mainPath) && fs_.exists(work.goodPath)) fs_.renameFile(work.goodPath, work.mainPath);
             return KnownStoreStatus::RecoveryFailed;
         }
-        if (!decodeValid(mainPath, check)) {
-            fs_.removeFile(mainPath);
-            if (fs_.exists(goodPath)) fs_.renameFile(goodPath, mainPath);
+        if (!decodeValid(work.mainPath, check)) {
+            fs_.removeFile(work.mainPath);
+            if (fs_.exists(work.goodPath)) fs_.renameFile(work.goodPath, work.mainPath);
             return KnownStoreStatus::RecoveryFailed;
         }
-        fs_.removeFile(delPath);
+        fs_.removeFile(work.delPath);
         return KnownStoreStatus::Ok;
     }
 };

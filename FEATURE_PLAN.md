@@ -1,6 +1,6 @@
 # Saved Devices, Learn a Known Device, and Nearby Signals
 
-Status: implemented in `v1.1.0-cc1101.11`; host tests cover storage, signal
+Status: implemented in `v1.1.0-cc1101.11`, hardened in `v1.1.0-cc1101.12`; host tests cover storage, signal
 models, and Saved UI lifecycle. Live discovery and controlled Amazfit learning
 have passed on CC1101. Physical SD persistence remains blocked by card detection. These features
 build on the existing Track Signal feature.
@@ -141,13 +141,20 @@ without a qualifying ambiguous neighbor. The earlier capture, interrupted by
 card handling, correctly returned inconsistent near readings. A single device
 test does not establish a general identification success rate.
 
-Physical SD persistence is not verified: three tested cards failed initial
-SPI communication, including an isolated test without display or radios on
-both SPI controllers. No device was saved and no card was formatted by the
-firmware. A working/seated card is needed for SD/display sharing, restart
-persistence, and saved-entry tracking/reacquisition/Pocket Mode checks.
-Original T-Embed runtime checks also remain pending. `v1.1.0-cc1101.11`
-therefore remains a test build.
+After the user formatted and reinserted a 2 GB FAT32 card, it mounted with the
+existing board pins. Physical testing exposed excessive stack use in record
+updates; `v1.1.0-cc1101.12` removes large aggregate temporaries and moves storage
+work buffers off the UI task stack. Physical create/read/rename/address-add/
+address-remove/delete tests now pass with the display active. The previously
+verified Amazfit was saved as MyAmazfit, survived a device restart, and opened
+from Saved Devices into Track Signal with fresh BLE readings. The lowest
+observed task-stack headroom during these diagnostic workflows was 3,728 bytes.
+The firmware did not format the card. Earlier initial-SPI failures cannot be
+attributed conclusively to capacity or formatting because seating also changed.
+
+Lost-signal/reacquisition, saved-entry Pocket Mode, additional cards/devices,
+and original T-Embed runtime checks remain pending. This remains a test build;
+one working card and one watch do not establish broad hardware compatibility.
 
 ## Description and documentation wording
 

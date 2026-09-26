@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <new>
+#include <type_traits>
 #include "known_device_discovery.h"
 #include "known_signal_model.h"
 #include "known_devices_api.h"
@@ -63,6 +64,13 @@ struct State {
 };
 
 static State state;
+static_assert(std::is_trivially_destructible<State>::value,
+              "Nearby state must remain safe for in-place reconstruction");
+
+static void resetStateInPlace() {
+    state.~State();
+    new (&state) State();
+}
 
 static const char *radioLabel(KnownRadio radio) {
     return radio == KnownRadio::Wifi ? "WiFi" : "BLE";
@@ -708,7 +716,10 @@ static void dispatchPending() {
 
 static void create(bool learnSelection, bool association, KnownRadio initialRadio) {
     if (state.active) return;
-    state = State{};
+    // State is larger than the loop task's comfortable temporary budget.
+    // Reconstruct it at its static address instead of assigning a full-size
+    // aggregate temporary on the stack.
+    resetStateInPlace();
     state.active = true;
     state.learnSelectionMode = learnSelection;
     state.associationMode = association;

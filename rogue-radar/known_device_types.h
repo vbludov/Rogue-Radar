@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 namespace rogue_radar {
 
@@ -28,6 +29,28 @@ struct KnownDevice {
     uint8_t addressCount = 0;
     KnownAddress addresses[8] = {};
 };
+
+inline void resetKnownAddress(KnownAddress &address) {
+    memset(address.address, 0, sizeof(address.address));
+    memset(address.advertisedName, 0, sizeof(address.advertisedName));
+    address.addressType = 255;
+    address.channel = 0;
+    address.manufacturerId = 0;
+    memset(address.manufacturerData, 0, sizeof(address.manufacturerData));
+    memset(address.serviceUuids, 0, sizeof(address.serviceUuids));
+    address.metadataTruncated = false;
+    address.lastSeenUptimeMs = 0;
+    address.lastSeenUnix = 0;
+    address.lastRssi = -127;
+}
+
+inline void resetKnownDevice(KnownDevice &device) {
+    device.id = 0;
+    memset(device.name, 0, sizeof(device.name));
+    device.radio = KnownRadio::Ble;
+    device.addressCount = 0;
+    for (uint8_t i = 0; i < 8; ++i) resetKnownAddress(device.addresses[i]);
+}
 
 struct KnownDeviceSummary {
     uint32_t id = 0;

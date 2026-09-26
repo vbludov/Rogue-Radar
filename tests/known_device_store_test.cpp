@@ -15,6 +15,8 @@ class MemoryFs : public KnownDeviceFileSystem {
     bool online = true;
     size_t capacity = 1024 * 1024;
     bool fullError = false;
+    int failAppendCall = -1;
+    int appendCallCount = 0;
     std::string failRenameFrom;
     std::string failRemovePath;
     std::map<std::string, std::vector<uint8_t> > files;
@@ -42,6 +44,8 @@ class MemoryFs : public KnownDeviceFileSystem {
     }
     bool appendWrite(const void *data, size_t size) override {
         if (!writing_) return false;
+        const int call = appendCallCount++;
+        if (call == failAppendCall) return false;
         if (usedWithout(writePath_) + writeData_.size() + size > capacity) {
             fullError = true;
             return false;
@@ -225,10 +229,59 @@ static void testValidation() {
     assert(loaded.addresses[0].addressType == 2 && loaded.addresses[1].addressType == 3);
 }
 
+static void testInPlaceReset() {
+    KnownDevice device = sample("Reset me", "AA:BB:CC:DD:EE:FF");
+    device.id = 42;
+    device.addresses[0].metadataTruncated = true;
+    device.addresses[0].lastSeenUptimeMs = 99;
+    strcpy(device.addresses[7].serviceUuids, "stale");
+    device.addresses[7].addressType = 2;
+    device.addresses[7].lastRssi = -12;
+
+    resetKnownDevice(device);
+    assert(device.id == 0 && device.name[0] == '\0');
+    assert(device.radio == KnownRadio::Ble && device.addressCount == 0);
+    for (uint8_t i = 0; i < 8; ++i) {
+        const KnownAddress &address = device.addresses[i];
+        assert(address.address[0] == '\0' && address.advertisedName[0] == '\0');
+        assert(address.addressType == 255 && address.channel == 0);
+        assert(address.manufacturerId == 0 && address.manufacturerData[0] == '\0');
+        assert(address.serviceUuids[0] == '\0' && !address.metadataTruncated);
+        assert(address.lastSeenUptimeMs == 0 && address.lastSeenUnix == 0);
+        assert(address.lastRssi == -127);
+    }
+}
+
+static void testEverySerializedWriteCutpointPreservesMain() {
+    MemoryFs measurementFs;
+    KnownDeviceStore measurementStore(measurementFs);
+    KnownDevice measurement = sample("Original", "10:20:30:40:50:60");
+    assert(measurementStore.create(measurement) == KnownStoreStatus::Ok);
+    const int serializedAppendCalls = measurementFs.appendCallCount;
+    assert(serializedAppendCalls > 1);
+
+    for (int cutpoint = 0; cutpoint < serializedAppendCalls; ++cutpoint) {
+        MemoryFs fs;
+        KnownDeviceStore store(fs);
+        KnownDevice device = sample("Original", "10:20:30:40:50:60");
+        assert(store.create(device) == KnownStoreStatus::Ok);
+        fs.failAppendCall = fs.appendCallCount + cutpoint;
+        strcpy(device.name, "Interrupted update");
+        assert(store.update(device) == KnownStoreStatus::IoError);
+
+        fs.failAppendCall = -1;
+        KnownDevice loaded{};
+        assert(store.read(device.id, loaded) == KnownStoreStatus::Ok);
+        assert(strcmp(loaded.name, "Original") == 0);
+    }
+}
+
 int main() {
     testCrudAndPagination();
     testRecoveryAndMalformedData();
     testFailuresAndTombstones();
     testValidation();
+    testInPlaceReset();
+    testEverySerializedWriteCutpointPreservesMain();
     std::cout << "known_device_store_test passed\n";
 }

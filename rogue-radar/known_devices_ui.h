@@ -294,13 +294,13 @@ static void run(Context &c, Action action, int argument) {
         note(c, c.record.name); button(c, "Confirm delete", Action::Delete); break;
     case Action::Delete:
         status = knownDeviceStore().deleteDevice(c.record.id);
-        if (status == KnownStoreStatus::Ok) { c.cursor = 0; c.previousCount = 0; c.record = KnownDevice{}; showList(c); }
+        if (status == KnownStoreStatus::Ok) { c.cursor = 0; c.previousCount = 0; resetKnownDevice(c.record); showList(c); }
         break;
     case Action::NameNew:
         c.keyboardNew = true;
         createKeyboardScreen("Name saved device", c.candidate.advertisedName, 32, keyboardDone); break;
     case Action::SaveNew:
-        c.record = KnownDevice{};
+        resetKnownDevice(c.record);
         c.record.radio = c.candidateRadio; c.record.addressCount = 1;
         c.record.addresses[0] = c.candidate;
         snprintf(c.record.name, sizeof(c.record.name), "%s", c.enteredName);

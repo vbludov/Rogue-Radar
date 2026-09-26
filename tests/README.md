@@ -63,8 +63,16 @@ diagnostic in `known_devices_device_test.h`. It creates and deletes only its
 own temporary SD record, then accepts serial commands to exercise the real
 Nearby, Learn, Saved, and Track pages. `status` reports candidates, learning
 samples and memory; `select N`, `learn`, `capture`, and `next` operate the capture stages.
-Movement must be performed by a person between stages. The fixture-specific
-`save-myamazfit` command is only for the user's authorized Amazfit test and
-requires a consistent completed capture. Restore normal firmware afterward;
+Movement must be performed by a person between stages. The diagnostic-only
+`save-verified ADDRESS TYPE` command is for the user's authorized Amazfit test:
+the supervisor must first verify the device through the controlled capture.
+It requires the exact selected Nearby BLE identity, saves the name MyAmazfit,
+suppresses duplicates, and refuses save after a storage lookup error. It does
+not itself repeat or certify the earlier learning capture. No private address
+is compiled into the test. `list-saved` checks records after reboot; the normal
+`saved`, `pick N`, and `saved-track` commands exercise the Saved Devices UI.
+`cleanup-synthetic` removes only this diagnostic's specifically marked Wi-Fi
+records. Stack high-water logs accompany storage and workflow checks.
+Restore normal firmware afterward;
 release builds expose none of these commands. Simulated signal tests do not
 establish a real-world identification success rate.

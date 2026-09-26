@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.12 | CC1101 test build | Fixes excessive stack use in saved-device storage and screen resets; 2 GB FAT32 CRUD, restart persistence, and saved Amazfit tracking verified on hardware |
 | v1.1.0-cc1101.11 | CC1101 test build | Adds SD-backed Saved Devices, guided Learn a Known Device capture, Nearby Signals, and reopening named targets in Track Signal; live discovery and Amazfit learning tested, SD persistence awaiting card detection |
 | v1.1.0-cc1101.10 | CC1101 test build | Adds Timed/Continuous scan sessions, Start/Stop, compact alert toggles, safe detail/tracker handoffs, and protection from inactivity timeout |
 | v1.1.0-cc1101.9 | CC1101 test build | Adds main-menu Power On/Off with confirmation, BQ25896 battery shutdown, USB guard, and power-on instructions |
@@ -34,7 +35,7 @@
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
 >
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.11` — host validation is in progress; physical device verification is pending.
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.12` — host tests and physical SD persistence/saved-target tracking pass; see the feature plan for remaining hardware checks.
 ---
 
 ## Overview
@@ -385,12 +386,13 @@ recent RSSI. Rows show name or address, recent history, trend, and saved status;
 selecting a row offers Track, Save, and association actions. Ordering freezes
 while navigating so the selected row stays stable.
 
-Both `v1.1.0-cc1101.11` firmware profiles build, with passing host storage,
+Both `v1.1.0-cc1101.12` firmware profiles build, with passing host storage,
 signal, radio, and UI lifecycle tests. CC1101 live discovery, Track/Back
-handoffs, and controlled Amazfit Band 7 learning passed. Physical SD writes
-remain unverified because the tested cards did not respond to initialization.
-SD/display sharing, restart persistence, saved-entry tracking/reacquisition,
-and saved-entry Pocket Mode need a working card; see [validation status](FEATURE_PLAN.md#validation-status).
+handoffs, and controlled Amazfit Band 7 learning passed. A seated 2 GB FAT32
+card passed physical create/read/rename/address-edit/delete tests with the
+display running. The named Amazfit entry survived restart and reopened through
+Saved Devices into live Track Signal. Lost-signal/reacquisition and saved-entry
+Pocket Mode checks remain pending; see [validation status](FEATURE_PLAN.md#validation-status).
 
 For CC1101 card-detection failures, LilyGo recommends a **SanDisk microSD card
 of 32 GB or smaller** in its [hardware FAQ](https://github.com/Xinyuan-LilyGO/T-Embed-CC1101#unable-to-detect-sd-card).
