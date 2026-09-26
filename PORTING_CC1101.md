@@ -135,12 +135,43 @@ with `INPUT_PULLUP`; the original T-Embed profile does not configure this pin
 as an input because it is used by its speaker.
 
 Press and release the top button to invoke the current screen's Back action.
-It cancels an open keyboard through the existing deferred Esc path, and does
-nothing on the main menu. A held button does not repeat. Input is debounced
+It cancels an open keyboard through the existing deferred Esc path, and a short
+press does nothing on the main menu. A held button does not repeat. Input is debounced
 on release; presses during a screen transition or simultaneous encoder click
 are ignored. During a blocking scan, the interrupt records the press and the
 main loop dispatches Back only after the scan has returned. It does not
 interrupt a firmware update or cancel a blocking radio scan midway.
+
+### Pocket Mode (v1.1.0-cc1101.3)
+
+On CC1101, hold the top button for at least two seconds and release to enter
+Pocket Mode from the current screen. Misc Tools > Pocket Mode also enters it.
+To keep a monitor running, enter directly from that monitor using the top
+button; navigating out to Misc Tools already stops the tool in the usual way.
+
+Pocket Mode turns the backlight off, suppresses normal ring lighting, and
+discards encoder rotation/clicks. Existing monitoring timers and radio activity
+continue, as do enabled sound and light alerts. Master LEDs OFF still suppresses
+light alerts. Auto-return-home and inactivity dimming are suspended.
+
+Press and release the top button to wake the same screen without navigating
+Back. The next short press works as Back again. An encoder button held during
+wake must be released for 50 ms before input resumes. Entry/wake dispatch waits
+for blocking scans to finish. Keyboard entry retains its existing top-button
+cancel behavior. Pocket Mode is not persisted across reboot and is unavailable
+on the original board, which lacks the separate wake key. This is a display/input
+lock, not CPU sleep; it does not promise a particular battery runtime.
+
+Validation: both board profiles compile; host tests for 7 and 8 LEDs pass normal
+light suppression, visible/capped alerts, and restoration, plus existing alert
+regressions. CC1101 flash hash verification and v1.1.0-cc1101.3 boot passed.
+Physical button, monitoring continuity, and pocket behavior await hardware checks.
+
+Hardware checks: enter from an active monitor, confirm display and normal ring
+go dark, turn/click the encoder without waking, and trigger an enabled alert.
+After more than the configured auto-home timeout, wake and confirm the monitor
+is still active. Confirm wake does not also go Back, encoder-held wake cannot
+select an item, and the next short top-button press navigates normally.
 
 Validation: try Wi-Fi and BLE submenus, Network Scanner, a device detail
 screen, WiFi Mapper, and a settings page. Confirm one level per press, no

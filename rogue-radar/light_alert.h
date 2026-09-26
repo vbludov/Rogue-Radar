@@ -32,7 +32,7 @@ public:
         copyFrame(baseFrame_, colors, count);
         baseBrightness_ = clampBrightness(brightness);
         if (!alertActive_) {
-            writeUnderlyingLocked(baseFrame_, baseBrightness_);
+            writeBaseLocked();
         }
         unlock();
     }
@@ -65,7 +65,7 @@ public:
             alertPending_ = false;
             alertActive_ = false;
             overlayValid_ = false;
-            writeUnderlyingLocked(baseFrame_, baseBrightness_);
+            writeBaseLocked();
         }
         const bool actualEnabled = alertEnabled_;
         unlock();
@@ -107,7 +107,21 @@ public:
         if (alertActive_ && overlayValid_) {
             writeUnderlyingLocked(overlayFrame_, LED_BRIGHTNESS);
         } else {
-            writeUnderlyingLocked(baseFrame_, baseBrightness_);
+            writeBaseLocked();
+        }
+        unlock();
+    }
+
+    void setNormalLightingSuppressed(bool suppressed)
+    {
+        lock();
+        if (normalLightingSuppressed_ == suppressed) {
+            unlock();
+            return;
+        }
+        normalLightingSuppressed_ = suppressed;
+        if (!alertActive_) {
+            writeBaseLocked();
         }
         unlock();
     }
@@ -122,6 +136,7 @@ private:
     bool alertPending_ = false;
     bool alertActive_ = false;
     bool overlayValid_ = false;
+    bool normalLightingSuppressed_ = false;
     bool taskCreationFailed_ = false;
     StaticSemaphore_t mutexStorage_ = {};
     SemaphoreHandle_t mutex_ = nullptr;
@@ -173,7 +188,7 @@ private:
             lock();
             alertActive_ = false;
             overlayValid_ = false;
-            writeUnderlyingLocked(baseFrame_, baseBrightness_);
+            writeBaseLocked();
             unlock();
         }
     }
@@ -195,6 +210,12 @@ private:
         const uint8_t effectiveBrightness =
             brightness < brightnessLimit_ ? brightness : brightnessLimit_;
         strip_.write(frame, NUM_LEDS, effectiveBrightness);
+    }
+
+    void writeBaseLocked()
+    {
+        writeUnderlyingLocked(baseFrame_,
+                              normalLightingSuppressed_ ? 0 : baseBrightness_);
     }
 
     static void copyFrame(rgb_color *destination,

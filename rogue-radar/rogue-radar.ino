@@ -252,6 +252,9 @@ static int            lcdBrightness     = LCD_BL_DEFAULT;
 // Safe first step for sleep-timer behavior: no ESP32 sleep modes yet.
 // We only dim the TFT backlight and APA102 LED brightness after no
 // encoder/button activity.
+static bool pocketModeActive = false;
+static bool encoderReleaseRequired = false;
+static uint32_t encoderReleasedAt = 0;
 static unsigned long  lastActivityMs    = 0;
 static bool           backlightDimmed   = false;
 static bool           dimmingEnabled    = (DIMMING_ENABLED_DEFAULT != 0);
@@ -1014,7 +1017,7 @@ static void cb_bleDetailBack(lv_event_t *e);
 //  INACTIVITY BACKLIGHT + APA102 LED DIMMER
 // ════════════════════════════════════════════════════════════════
 static void applyBacklightLevel(uint8_t level) {
-    boardBacklightWrite(level);
+    boardBacklightWrite(pocketModeActive ? 0 : level);
 }
 
 static uint8_t activeLedBrightness(uint8_t requestedBrightness = LED_BRIGHTNESS) {
@@ -1038,6 +1041,7 @@ static void refreshCurrentLEDs(uint8_t requestedBrightness = LED_BRIGHTNESS) {
 }
 
 static void resetInactivityTimer() {
+    if (pocketModeActive) return;
     lastActivityMs = millis();
 
     // If the display/LEDs were dimmed, restore them on the first encoder
@@ -1049,7 +1053,37 @@ static void resetInactivityTimer() {
     }
 }
 
+// Keep the active screen and its monitoring timers alive. This is a display
+// and input lock, not ESP32 sleep, and is intentionally not persisted.
+static void enterPocketMode() {
+#if RR_BACK_BUTTON_PIN >= 0
+    if (pocketModeActive || powerOffTriggered || keyboardActive ||
+        keyboardFinishPending || lv_display_get_screen_prev(lvDisp)) return;
+    pocketModeActive = true;
+    encoderReleaseRequired = true;
+    encoderReleasedAt = 0;
+    encoder.setPosition(0);
+    ledStrip.setNormalLightingSuppressed(true);
+    applyBacklightLevel(0);
+    Serial.println("[Pocket] Locked; top button wakes");
+#endif
+}
+
+static void exitPocketMode() {
+    pocketModeActive = false;
+    encoderReleaseRequired = true;
+    encoderReleasedAt = 0;
+    encoder.setPosition(0);
+    backlightDimmed = false;
+    lastActivityMs = millis();
+    ledStrip.setBrightnessLimit(ledsEnabled ? 31 : 0);
+    ledStrip.setNormalLightingSuppressed(false);
+    applyBacklightLevel((uint8_t)lcdBrightness);
+    Serial.println("[Pocket] Awake");
+}
+
 static void updateInactivityDimmer() {
+    if (pocketModeActive) return;
     // Runtime OFF means no dimming at all. If the device was already dimmed, wake it back up.
     if (!dimmingEnabled) {
         if (backlightDimmed) {
@@ -1487,6 +1521,20 @@ static void encoder_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     encoder.tick();
     int pos = encoder.getPosition();
     bool pressed = (digitalRead(ENCODER_BTN) == LOW);
+    static bool wasPressed = false;
+
+    // Discard pocket input, including a button held across wake. Require a
+    // stable release before accepting another encoder click or movement.
+    if (pocketModeActive || encoderReleaseRequired) {
+        wasPressed = false;
+        encoder.setPosition(0);
+        if (pocketModeActive || pressed) encoderReleasedAt = 0;
+        else if (encoderReleasedAt == 0) encoderReleasedAt = millis();
+        else if (millis() - encoderReleasedAt >= 50) encoderReleaseRequired = false;
+        data->enc_diff = 0;
+        data->state = LV_INDEV_STATE_RELEASED;
+        return;
+    }
 
     // Any encoder movement or button press counts as activity.
     // This wakes the backlight before the UI action continues.
@@ -1497,7 +1545,6 @@ static void encoder_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     // Optional menu feedback sounds. These are intentionally short and
     // shut I2S back down after each tick/click to avoid the GPIO0
     // false power-off issue seen when I2S stayed active.
-    static bool wasPressed = false;
 
     // Once OK/Esc is selected, freeze LVGL input until loop() safely finishes
     // the keyboard close after the physical button has been released. This
@@ -2299,13 +2346,21 @@ static volatile bool backKeyPending = false;
 static volatile bool backKeyArmed = false;
 static uint32_t backKeyReleasedAt = 0;
 static bool backKeyObserved = false;
+static volatile TickType_t backKeyPressedTick = 0;
+static volatile TickType_t backKeyReleasedTick = 0;
 
 static void IRAM_ATTR onBackButtonPressed() {
-    // Capture even a short press during a blocking scan. Never call LVGL here.
+    // Capture duration even when the entire gesture happens during a scan.
+    const bool pressed = (digitalRead(RR_BACK_BUTTON_PIN) == LOW);
+    const TickType_t tick = xTaskGetTickCountFromISR();
     portENTER_CRITICAL_ISR(&backKeyMux);
-    if (backKeyArmed) {
+    if (pressed && backKeyArmed) {
         backKeyPending = true;
         backKeyArmed = false;
+        backKeyPressedTick = tick;
+        backKeyReleasedTick = tick;
+    } else if (!pressed && backKeyPending) {
+        backKeyReleasedTick = tick;
     }
     portEXIT_CRITICAL_ISR(&backKeyMux);
 }
@@ -2314,7 +2369,7 @@ static void initBackShortcut() {
     pinMode(RR_BACK_BUTTON_PIN, INPUT_PULLUP);
     // A button held during boot must be released before it can navigate.
     backKeyArmed = (digitalRead(RR_BACK_BUTTON_PIN) == HIGH);
-    attachInterrupt(digitalPinToInterrupt(RR_BACK_BUTTON_PIN), onBackButtonPressed, FALLING);
+    attachInterrupt(digitalPinToInterrupt(RR_BACK_BUTTON_PIN), onBackButtonPressed, CHANGE);
 }
 
 static lv_obj_t *findActiveBackButton(lv_obj_t *root, lv_group_t *group) {
@@ -2348,17 +2403,23 @@ static void processBackShortcut() {
     }
     if (digitalRead(RR_BACK_BUTTON_PIN) == LOW) {
         backKeyReleasedAt = 0;
-        return;  // Release to navigate; holding never repeats.
+        return;  // Dispatch once on release, including a long hold.
     }
     if (backKeyReleasedAt == 0) backKeyReleasedAt = now;
     if (now - backKeyReleasedAt < 30) return;
     portENTER_CRITICAL(&backKeyMux);
     const bool pending = backKeyPending;
+    const bool backKeyLongPress =
+        (TickType_t)(backKeyReleasedTick - backKeyPressedTick) >= pdMS_TO_TICKS(2000);
     backKeyPending = false;
     backKeyArmed = true;
     portEXIT_CRITICAL(&backKeyMux);
     backKeyObserved = false;
     if (!pending) return;
+    if (pocketModeActive) {
+        exitPocketMode();  // Consume wake: never also navigate Back.
+        return;
+    }
     resetInactivityTimer();
 
     // Run only from loop(), after LVGL has returned. In particular, never
@@ -2370,6 +2431,10 @@ static void processBackShortcut() {
         lv_indev_get_state(lvIndev) == LV_INDEV_STATE_PRESSED ||
         lv_display_get_screen_prev(lvDisp)) return;
 
+    if (backKeyLongPress && !keyboardActive) {
+        enterPocketMode();
+        return;
+    }
     if (keyboardActive) {
         keyboardRequestFinish(false);  // Same deferred cancel path as Esc.
         return;
@@ -3016,6 +3081,7 @@ static void cb_miscToolSelected(lv_event_t *e) {
         case 12: createResetSettings();    break;
         case 13: createPowerOffConfirm();  break;
         case 14: toggleLightAlertEnabled(); break;
+        case 15: enterPocketMode(); break;
     }
 }
 
@@ -3048,8 +3114,11 @@ void createMiscMenu() {
     miscRotationBtn = nullptr;
 
     // Keep stable action IDs while grouping the two alert toggles together.
-    const uint8_t itemOrder[] = {0, 1, 2, 3, 4, 5, 6, 7, 14, 8, 9, 10, 11, 12, 13};
+    const uint8_t itemOrder[] = {0, 1, 2, 3, 4, 5, 6, 7, 14, 8, 9, 10, 11, 15, 12, 13};
     for (uint8_t i : itemOrder) {
+#if RR_BACK_BUTTON_PIN < 0
+        if (i == 15) continue;  // Pocket Mode requires a separate wake key.
+#endif
 #if !RR_HAS_POWER_OFF
         if (i == 13) continue;
 #endif
@@ -3077,6 +3146,8 @@ void createMiscMenu() {
             label = LV_SYMBOL_POWER "  Power Off";
         } else if (i == 14) {
             label = getLightAlertMenuLabel();
+        } else if (i == 15) {
+            label = LV_SYMBOL_EYE_CLOSE "  Pocket Mode";
         } else {
             label = "  Unknown";
         }
@@ -14781,7 +14852,15 @@ static void cleanupForAutoReturnHome(lv_obj_t *activeScr) {
 
 static void updateAutoReturnHome() {
 #if AUTO_RETURN_HOME_TIMEOUT_MS > 0
-    if (powerOffTriggered || !mainScreen) return;
+    if (pocketModeActive || powerOffTriggered || !mainScreen) return;
+#if RR_BACK_BUTTON_PIN >= 0
+    // Do not tear down a monitor while the user is holding/releasing the
+    // Pocket Mode gesture, including its stable-release debounce interval.
+    portENTER_CRITICAL(&backKeyMux);
+    const bool topGesturePending = backKeyPending;
+    portEXIT_CRITICAL(&backKeyMux);
+    if (topGesturePending || digitalRead(RR_BACK_BUTTON_PIN) == LOW) return;
+#endif
 
     lv_obj_t *activeScr = lv_screen_active();
     if (activeScr == mainScreen) return;
