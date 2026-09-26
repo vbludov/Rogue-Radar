@@ -105,6 +105,14 @@
 #include "splash.h"
 
 #if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+#ifndef USE_HSPI_PORT
+#error "T-Embed CC1101 requires its HSPI TFT_eSPI setup; use the t_embed_cc1101 build."
+#endif
+static_assert(TFT_CS == RR_TFT_CS && TFT_DC == RR_TFT_DC &&
+              TFT_RST == RR_TFT_RST && TFT_BL == LCD_BL_PIN &&
+              TFT_SCLK == RR_SPI_SCLK && TFT_MOSI == RR_SPI_MOSI &&
+              TFT_MISO == RR_SPI_MISO,
+              "TFT_eSPI pin map does not match the T-Embed CC1101 board profile");
 static constexpr i2s_port_t RR_SPEAKER_I2S_PORT = I2S_NUM_1;
 #else
 static constexpr i2s_port_t RR_SPEAKER_I2S_PORT = I2S_NUM_0;
@@ -169,16 +177,16 @@ TFT_eSPI tft = TFT_eSPI();
 // serialize access before using this bus.
 static void boardDeselectSharedSpi() {
 #if RR_SHARED_SPI
-    digitalWrite(TFT_CS, HIGH);
+    digitalWrite(RR_TFT_CS, HIGH);
     digitalWrite(SD_CS, HIGH);
-    digitalWrite(12, HIGH);  // onboard CC1101
-    digitalWrite(44, HIGH);  // optional nRF24 expansion
+    digitalWrite(RR_CC1101_CS, HIGH);
+    digitalWrite(RR_NRF24_CS, HIGH);
 #endif
 }
 
 static void boardEarlyInit() {
 #if RR_SHARED_SPI
-    const uint8_t chipSelects[] = {TFT_CS, SD_CS, 12, 44};
+    const uint8_t chipSelects[] = {RR_TFT_CS, SD_CS, RR_CC1101_CS, RR_NRF24_CS};
     for (uint8_t pin : chipSelects) {
         digitalWrite(pin, HIGH);
         pinMode(pin, OUTPUT);
@@ -14742,6 +14750,7 @@ void setup() {
     Serial.printf("[Rogue-Radar] Chip: %s rev %d\n", ESP.getChipModel(), ESP.getChipRevision());
     Serial.printf("[Rogue-Radar] CPU: %u MHz\n", ESP.getCpuFreqMHz());
     Serial.printf("[Rogue-Radar] Free heap: %u bytes\n", ESP.getFreeHeap());
+    Serial.printf("[Rogue-Radar] PSRAM: %u bytes, free: %u bytes\n", ESP.getPsramSize(), ESP.getFreePsram());
     Serial.printf("[Rogue-Radar] Flash size: %u bytes\n", ESP.getFlashChipSize());
     Serial.printf("[Rogue-Radar] Sketch size: %u bytes\n", ESP.getSketchSize());
     Serial.printf("[Rogue-Radar] Free sketch space: %u bytes\n", ESP.getFreeSketchSpace());
