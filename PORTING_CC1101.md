@@ -274,7 +274,7 @@ Both board builds and CC1101 flash/boot verification passed for v1.1.0-cc1101.6.
 
 The screen shows the target identity, live RSSI, recent strength trend, and a
 30-second chart: muted raw readings and a brighter smoothed average, with a
-fixed -100 to -30 dBm scale. Missing 500 ms buckets are gaps. After three seconds
+fixed -130 to 0 dBm scale as of v1.1.0-cc1101.13. Missing 500 ms buckets are gaps. After three seconds
 without a reading, it shows signal lost and stops the meter/beeps; reacquisition
 resets smoothing and builds a fresh trend. Signal strength is not distance or
 direction, and reflections/antenna orientation can affect it.
@@ -314,13 +314,13 @@ walk closer/farther; test both icon toggles, saved volume, loss/reacquisition,
 Pocket Mode, and repeated Back/re-entry followed by a normal rescan for Wi-Fi,
 BLE and AirTag lists.
 
-The next planned feature is **Saved Devices — Find and Track Known Devices**:
-name and save known Wi-Fi/BLE targets on the SD card, then reopen them to locate
-them using the existing tracker. **Learn a Known Device** follows, adding
-advertised details and multiple user-confirmed addresses to saved records.
-**Nearby Signals** comes next, adding a ranked discovery list with history
-charts, trend indicators, and save/learn/track actions. These features are
-planned, not yet implemented; see [FEATURE_PLAN.md](FEATURE_PLAN.md).
+**Saved Devices — Find and Track Known Devices**, **Learn a Known Device**,
+and **Nearby Signals** were implemented in v1.1.0-cc1101.11. Version .12
+hardened storage stack use and verified physical SD operations, restart
+persistence, and saved Amazfit tracking on a 2 GB FAT32 card. Version .13
+keeps strong signals visible in both chart views. See [FEATURE_PLAN.md](FEATURE_PLAN.md)
+for current scope and remaining validation, and the [branch overview](README.md)
+for the supported CC1101 feature list.
 
 ### General hardware checks
 

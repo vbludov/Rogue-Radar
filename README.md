@@ -1,22 +1,182 @@
-<p align="center">
-  <img src="Images/header-image.png" alt="Rogue Radar Header" width="100%" />
-</p>
+# Rogue Radar for LilyGO T-Embed CC1101
 
-<h1 align="center">Rogue Radar</h1>
+Handheld **Wi-Fi and Bluetooth Low Energy scanning, signal tracking, and known-device finding** for the LilyGO T-Embed CC1101. Navigate with the rotary encoder, follow signals on the display, and use the eight-light ring and speaker for visual and audio guidance.
 
-> **T-Embed CC1101 port:** see [PORTING_CC1101.md](PORTING_CC1101.md) for the
-> separate build profile, current feature support, and hardware validation status.
-> The original T-Embed remains the default build.
+**Branch:** `t-embed-cc1101` · **Current firmware:** `v1.1.0-cc1101.13` · **Status:** test build
 
-<p align="center"><strong>ESP32-S3 multi-tool firmware for WiFi, BLE, GPS, and device utilities on the LilyGO T-Embed (non CC1101).</strong></p>
+This branch builds on [ATOMNFT/Rogue-Radar](https://github.com/ATOMNFT/Rogue-Radar), with board support and features developed for the T-Embed CC1101. The tools described below use the ESP32-S3's 2.4 GHz Wi-Fi and BLE radios. Sub-GHz scanning/transmitting through the CC1101 radio is not implemented.
 
-## 🧭 Version Tracker
+## Overview
 
-| Version | Status | Notes |
-|--------|--------|-------|
+- **Discover nearby signals:** scan Wi-Fi access points and BLE advertisers, inspect detector matches, and compare recent signal strength.
+- **Track a selected target:** follow a live signal chart with a strength meter, ring lighting, and optional audio guidance.
+- **Find and Track Known Devices:** save named Wi-Fi or BLE devices on a microSD card and reopen them later in Track Signal.
+- **Learn a Known Device:** compare near/away/near measurements and review neighboring signals before confirming a saved identity.
+- **Keep monitoring:** choose timed or continuous scanning, independently toggle sound and light alerts, and use Pocket Mode while carrying the device.
+
+[Controls](#controls-and-power) · [Build and flash](#build-and-flash) · [Version tracker](#version-tracker) · [Feature plan and validation](FEATURE_PLAN.md)
+
+## Signal discovery and tracking
+
+### Nearby Signals
+
+Separate **Wi-Fi** and **BLE** views rank access points or advertisers by smoothed recent signal strength. Each row shows the SSID or advertised name, falling back to an address, alongside RSSI, a small history chart, a trend indicator, and saved-device status. Ranking pauses while navigating so the selected row stays stable.
+
+Select a result to **Track**, **Save**, or associate its address with an existing saved device. The charts cover **−130 to 0 dBm**, keeping very strong nearby signals visible.
+
+### Track Signal
+
+Select **Track Signal** from a Network Scanner result, any BLE scanner/detector result, Nearby Signals, or a saved device. Tracking follows the selected Wi-Fi BSSID or BLE address.
+
+- Large **30-second live chart** with raw and smoothed readings, current RSSI, and a strengthening/weakening indicator.
+- **Encoder-ring strength indication** that fills as the signal gets stronger.
+- **Optional guidance audio** with faster, higher-pitched beeps as signal strength increases.
+- Compact **speaker** and **lightbulb** toggles; crossed icons indicate disabled guidance.
+- Missing readings appear as gaps. Waiting/lost status replaces live guidance when the target is absent.
+- Back returns to the originating result or saved-device page.
+
+Signal strength helps you explore where a signal becomes stronger; it does not provide reliable distance or direction. Tracking guidance settings are separate from scanner detection-alert settings.
+
+### Saved Devices — Find and Track Known Devices
+
+Save a Wi-Fi or BLE target with a recognizable name, such as **My Watch** or **My AirTag**, then open **Saved Devices → your device → Track Signal** to find and locate it when it is advertising within range.
+
+The SD library supports custom names, rename/delete, advertised details, and up to **eight explicitly confirmed addresses per device**. You can review or remove confirmed addresses and associate a newly observed address. If several saved addresses are present, choose the one to track; their signal readings are not combined.
+
+Saved devices live on the **microSD card**, while ordinary preferences are saved internally. An unavailable card disables the saved library; live scanning and unsaved tracking remain available. Records include corruption checks and recovery files for interrupted updates.
+
+### Learn a Known Device
+
+A guided **near → away → near** exercise helps distinguish a chosen Wi-Fi or BLE signal from nearby stationary devices:
+
+1. Select the target in Nearby Signals or use Learn a Known Device.
+2. Position the target near the radar, press **Capture**, and keep it still until capture finishes.
+3. Press **Next**, move only the target away, then capture again.
+4. Return it to the same near position and orientation for the final capture.
+5. Review the signal response, excluded neighbors, and possible matches before saving or associating an address.
+
+The result can report a consistent response, inconsistent readings, or insufficient evidence. Similar advertisement details are suggestions for review. Learning never automatically merges devices or confirms a new address.
+
+BLE addresses can rotate, and names or advertisement contents can be shared by unrelated devices. Saving several addresses does not guarantee recognition of a future private address. This feature uses BLE advertisements; it does not support Bluetooth Classic devices.
+
+## Wi-Fi tools
+
+| Tool | What it does |
+|---|---|
+| **Network Scanner** | Lists nearby access points with SSID, BSSID, RSSI, channel, and security details; select a result to track or save it. |
+| **Connect to AP** | Select an access point, enter its password, and connect for the connected-network tools. |
+| **LAN Host Discovery** | Checks hosts on the connected local subnet using lightweight TCP probes. |
+| **Gateway Info** | Shows connection, addressing, gateway, DNS, signal, and connectivity information. |
+| **Station Scanner** | Observes nearby Wi-Fi client activity passively. |
+| **Deauth Detector** | Monitors deauthentication/disassociation activity and provides event statistics. |
+| **Channel Analyzer** | Surveys Wi-Fi channel activity and signal strength. |
+| **Packet Monitor** | Shows packet rates, packet types, average RSSI, channel controls, and a live graph. |
+| **WiFi Mapper** | Displays nearby access-point signals with RSSI scaling and speed presets. |
+| **PineAP Hunter** | Watches for BSSIDs cycling through many SSIDs across scans. |
+| **Pwnagotchi Watch** | Looks for matching beacon behavior and displays advertised status and device details. |
+| **Flock Detector** | Flags Wi-Fi patterns associated with Flock-style devices and shows match details. |
+| **Flock Hybrid** | Alternates BLE and Wi-Fi detection phases and combines their results in one view. |
+
+## BLE tools
+
+Every BLE scanner/detector below provides **Track Signal** access from a selected result. Detector matches are based on advertisement patterns and are indications to inspect, not proof of a device's identity or purpose.
+
+| Tool | What it does |
+|---|---|
+| **BLE Scanner** | Discovers BLE advertisers and shows their names, addresses, and signal details. |
+| **AirTag Detector** | Looks for AirTag-like / Apple Find My advertisement patterns. |
+| **Flipper Detector** | Looks for Flipper-style names, address prefixes, and service identifiers. |
+| **nyanBOX Detector** | Shows matching badge advertisements, including available level, version, and age details. |
+| **Axon Detector** | Looks for configured Axon-style address prefixes and shows matching advertisements. |
+| **Raven Detector** | Looks for Raven / SoundThinking-style BLE service patterns. |
+| **Smart Charger** | Passively looks for Smart Charger / FFF0 advertisements and shows available details without connecting or controlling the charger. |
+| **Tesla Detector** | Looks for Tesla-style BLE names and shows signal and advertisement details. |
+| **Skimmer Detector** | Flags suspicious BLE serial/module names and related advertised patterns for inspection. |
+| **Meta Detector** | Looks for Meta / Ray-Ban-style smart-glasses advertisements. |
+
+## Timed and continuous scanning
+
+The 20 scanner/detector pages offer **Timed / Continuous**, **Start / Stop**, and compact speaker/lightbulb alert toggles. The mode is remembered per tool. Open a page, select the mode, and press **Start**.
+
+**Timed** uses the configured duration. **Continuous** runs until Stop or Back. Stop keeps the results; Back releases the radio before leaving. Opening a result or Track Signal pauses its parent scan, which resumes on return with the remaining timed duration preserved.
+
+This applies to all ten BLE pages and the ten Wi-Fi monitoring pages. **Connect to AP, LAN Host Discovery, and Gateway Info** retain their separate workflows. Flock Hybrid alternates radios; it does not listen on Wi-Fi and BLE simultaneously. Scan results are bounded in memory rather than stored as a permanent encounter log.
+
+## Alerts, Pocket Mode, and settings
+
+| Feature | Behavior |
+|---|---|
+| **Alert Sound** | Enables detection chirps independently of menu feedback and tracking guidance audio. |
+| **Light Alert** | Uses the same detection events as sound alerts: the ring flashes red, then runs a red chase effect. Sound and light can be enabled independently. |
+| **Scanner alert toggles** | Speaker and lightbulb buttons control the saved Alert Sound / Light Alert preferences. The master LED switch still applies. |
+| **Pocket Mode** | Turns off the display and suppresses normal ring lighting, locks encoder input, and keeps monitoring and enabled alerts running. The top button wakes the same screen. |
+| **Brightness and dimming** | Adjust display brightness and enable inactivity dimming. |
+| **Themes and rotation** | Choose a built-in color theme or flip the landscape display. |
+| **LEDs** | Enable or disable the eight-light WS2812 ring, including its menu and scanning effects. |
+| **Sound controls** | Adjust alert/menu volumes and toggle menu feedback separately. |
+| **Scan Defaults** | Configure scan durations, result limits, channel-hop timing, and scan presets. |
+| **Device Info** | View firmware, board, chip, memory, and address information. |
+| **SD Update** | Provides an on-device application update workflow from microSD; place the matching CC1101 application binary at `/update.bin` in the card root. USB flashing is the validated installation path below. |
+| **Reset Settings** | Restore default saved runtime preferences. |
+| **Power On/Off** | Open the shutdown confirmation from the main menu or Misc Tools. |
+
+Repeat sightings are filtered to reduce repeated alerts. Active scanning and tracking are protected from automatic return-home. Pocket Mode is a display/input lock, so it does not put the processor to sleep.
+
+## Controls and power
+
+| Control | Action |
+|---|---|
+| **Rotate encoder** | Move through menu items and results. |
+| **Press encoder** | Select the focused item. |
+| **Top button: press and release** | Go Back one level or cancel keyboard entry. On the main menu it has no Back action. |
+| **Top button: hold at least two seconds, then release** | Enter Pocket Mode directly from the active screen. Keyboard entry retains its cancel behavior. |
+| **Top button while in Pocket Mode** | Wake the current screen; the next short press works as Back. |
+
+For continued monitoring in a pocket, enter Pocket Mode directly from the running tool. Navigation to Misc Tools first leaves that tool. Back/wake actions can wait for a blocking scan to return.
+
+To shut down, disconnect USB and choose **Power On/Off → Power Off**. Allow up to 15 seconds. To turn the device on, use the hardware **PWR/QON** button or reconnect USB. The top Back button is separate from the hardware power control.
+
+## Hardware and storage
+
+This build targets the **LilyGO T-Embed CC1101** with an ESP32-S3, a **320 × 170 ST7789 display**, rotary encoder, separate top button, **eight WS2812 LEDs**, onboard speaker, and microSD slot. The display and card share the board's SPI bus.
+
+A **2 GB FAT32 card** has passed physical saved-device create/read/rename/address-edit/delete tests and restart persistence. Card seating matters; insert it fully with the contacts correctly engaged. Compatibility with other cards has not been established by that test. The firmware does not automatically format a card.
+
+Board pin assignments and build details are maintained in [board_config.h](rogue-radar/board_config.h) and the [CC1101 porting notes](PORTING_CC1101.md).
+
+## Build and flash
+
+Use [PlatformIO](https://platformio.org/) and explicitly select the CC1101 environment:
+
+```sh
+git clone --branch t-embed-cc1101 https://github.com/vbludov/Rogue-Radar.git
+cd Rogue-Radar
+pio run -e t_embed_cc1101
+pio run -e t_embed_cc1101 -t upload
+pio device monitor -b 115200
+```
+
+If port selection is needed, add `--upload-port COM5` to the upload command, replacing `COM5` with your device's port. The project pins its platform and library versions and selects the CC1101 display configuration automatically. No manual TFT library-file replacement is required.
+
+The application binary is `.pio/build/t_embed_cc1101/firmware.bin` with default build paths. PlatformIO's upload target handles the required flash images and offsets. See the [Windows short-path build instructions](PORTING_CC1101.md#reproducible-build) if your checkout path exceeds the compiler's command-length limit.
+
+Always specify `-e t_embed_cc1101`: the repository retains an `original` compatibility environment as its default, which is not the CC1101 target.
+
+## Validation status
+
+Both firmware profiles compile. Host checks cover signal models, radio/session lifecycles, storage recovery, and UI navigation. Physical CC1101 checks include display/controls, scanner lifecycle handoffs, SD operations, and restart persistence. Controlled Amazfit Band 7 learning produced a consistent near/away/near response; the named saved device subsequently reopened into Track Signal with fresh BLE readings.
+
+The `.13` chart-range update builds and boots on the device; close-range visual confirmation remains pending. Additional cards and device types, saved-target loss/reacquisition, saved-entry Pocket Mode, and the SD firmware-update flow still need broader hardware validation. A detector appearing in the menu does not mean its accuracy has been validated against every matching device.
+
+See [FEATURE_PLAN.md](FEATURE_PLAN.md#validation-status) for the detailed feature scope and current validation record.
+
+## Version tracker
+
+| Version | Status | Changes |
+|---|---|---|
 | v1.1.0-cc1101.13 | CC1101 test build | Keeps strong and weak RSSI history visible in Nearby Signals and Track Signal with full-range chart scales and bounded plotting |
 | v1.1.0-cc1101.12 | CC1101 test build | Fixes excessive stack use in saved-device storage and screen resets; 2 GB FAT32 CRUD, restart persistence, and saved Amazfit tracking verified on hardware |
-| v1.1.0-cc1101.11 | CC1101 test build | Adds SD-backed Saved Devices, guided Learn a Known Device capture, Nearby Signals, and reopening named targets in Track Signal; live discovery and Amazfit learning tested, SD persistence awaiting card detection |
+| v1.1.0-cc1101.11 | CC1101 test build | Adds SD-backed Saved Devices, guided Learn a Known Device capture, Nearby Signals, and reopening named targets in Track Signal; live discovery and Amazfit learning tested; SD validation completed in .12 |
 | v1.1.0-cc1101.10 | CC1101 test build | Adds Timed/Continuous scan sessions, Start/Stop, compact alert toggles, safe detail/tracker handoffs, and protection from inactivity timeout |
 | v1.1.0-cc1101.9 | CC1101 test build | Adds main-menu Power On/Off with confirmation, BQ25896 battery shutdown, USB guard, and power-on instructions |
 | v1.1.0-cc1101.8 | CC1101 test build | Protects keyboard editing from idle home cleanup, clears retired menu references, and fixes stale transition state when opening the keyboard |
@@ -27,403 +187,15 @@
 | v1.1.0-cc1101.3 | CC1101 test build | Adds Pocket Mode: display off, encoder locked, monitoring and selected alerts continue; top-button wake |
 | v1.1.0-cc1101.2 | CC1101 test build | Adds saved Light Alert toggle: red ring flash and chase on detection alerts, independent of sound; restores existing lighting afterward |
 | v1.1.0-cc1101.1 | CC1101 test build | Adds T-Embed CC1101 board support and top-button Back shortcut (GPIO6), including keyboard cancel; fixes Wi-Fi tool re-entry crash; preserves the original T-Embed build |
-| v1.0.5 | Stable | Adds Smart Charger Monitor, adds Audio Tools with SD WAV saving, on-device recordings browser, selected-file playback, on-device delete, improved Sound Recorder SD diagnostics, and Sound Recorder UI/stability cleanup |
-| v1.0.4 | Stable | Adds Audio Tools with Sound Recorder, Connect to AP, LAN Host Discovery, Gateway Info, WiFi Mapper, Station Scanner, Raven Detector, improved Flock detection, menu-based Power Off, and general UI/stability cleanup |
-| v1.0.3 | Stable | Adds battery display, adds Menu Feedback Volume and Alert Sound Volume controls, adds Deauth Stats, expands Pwnagotchi Watch details, improves Device Info and other features, and fixes theme focus styling |
-| v1.0.2 | Stable | Adds Packet Monitor with live graph and hop presets, Flock Hybrid, nyanBOX/Axon/Tesla detectors, improved AirTag/Flipper/Skimmer detection, extra themes, and menu cleanup |
-| v1.0.1 | Stable | Adds display/LED dimming controls, scan defaults, rotation toggle, audio feedback, and improved Flock detection |
-| v1.0.0 | Stable | Initial public release of the Rogue Radar Firmware |
-
-> **Latest Release:** `v1.0.5` — Rogue Radar Firmware
->
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.13` — host tests and physical SD persistence/saved-target tracking pass; see the feature plan for remaining hardware checks.
----
-
-## Overview
-
-**Rogue Radar** is a handheld ESP32-S3 firmware built for the **LilyGO T-Embed** that combines multiple wireless and utility tools into one rotary-driven interface.
-
-The firmware uses **LVGL** for the UI, **TFT_eSPI** for the 320x170 ST7789 display, **BLE + WiFi** features from the ESP32 core, **TinyGPS++** for GPS data, **APA102 LEDs** for visual status feedback, and optional I2S speaker output for alerts and menu feedback.
-
-It is designed around fast menu navigation, onboard scanning tools, live signal data, GPS stats, SD-based update support, and a clean embedded dashboard feel.
-
-## Screenshots
-
-<p align="center">
-  <img src="Images/1.jpg" alt="Rogue Radar boot screen" width="30%" />
-  <img src="Images/2.jpg" alt="Rogue Radar Screenshot 2" width="30%" />
-  <img src="Images/3.jpg" alt="Rogue Radar Screenshot 3" width="30%" />
-</p>
-
-<p align="center">
-  <img src="Images/4.jpg" alt="Rogue Radar Screenshot 4" width="45%" />
-  <img src="Images/5.jpg" alt="Rogue Radar Screenshot 5" width="45%" />
-</p>
-
----
-
-## Current Tool Set
-
-### WiFi Tools
-- **Network Scanner** – scans nearby access points and shows SSID, BSSID, RSSI, channel, and security type.
-- **Connect to AP** – scans nearby access points, lets you select one, enter a password, connect to WiFi, and keep the connection available for connected tools.
-- **LAN Host Discovery** – performs safe local subnet discovery using lightweight TCP checks and lists discovered LAN hosts.
-- **Gateway Info** – shows connected network details such as SSID, signal, local IP, gateway, subnet, DNS, router TCP status, internet check, and station MAC.
-- **Station Scanner** – passively scans for nearby WiFi station/client activity.
-- **Deauth Detector** – monitors for deauthentication and disassociation activity using promiscuous mode, with live event tracking and a Deauth Stats view.
-- **Channel Analyzer** – surveys channel activity and signal strength across WiFi channels.
-- **Packet Monitor** – live WiFi packet monitor with channel selection, packet rate, packet type counts, average RSSI, optional channel hopping, and a live bar graph.
-- **WiFi Mapper** – visual WiFi mapping-style scanner with RSSI scaling and speed presets.
-- **PineAP Hunter** – watches for BSSIDs cycling through many SSIDs across scans.
-- **Pwnagotchi Watch** – looks for Pwnagotchi beacon behavior, parses status data, and includes selectable results with a detail page showing name, type, pwnd total, RSSI, channel, MAC data, and raw preview.
-- **Flock Detector** – flags WiFi activity associated with Flock-related SSID keywords, stronger ID patterns, MAC/OUI hints, adaptive dwell timing, and source MAC details.
-- **Flock Hybrid** – combines BLE and WiFi Flock-style detection into one scanner with merged results and selectable scan presets.
-
-### BLE Tools
-- **BLE Scanner** – scans nearby Bluetooth Low Energy devices and lists signal details.
-- **AirTag Detector** – identifies AirTag-like BLE activity using manufacturer data, UUID fallback, and passive Apple Find My / AirTag payload pattern detection.
-- **Flipper Detector** – detects Flipper-style BLE devices using name matching, OUI fallback, and UUID detection for Black, White, and Transparent variants; results are selectable with a detail page.
-- **nyanBOX Detector** – detects nyanBOX / Nyan Devices BLE badges and shows name, MAC, RSSI, level, version, age, and Locate Mode.
-- **Axon Detector** – detects Axon-style BLE devices by configurable MAC/OUI prefix with detail view and Locate Mode.
-- **Raven Detector** – passively detects Raven / SoundThinking-style BLE service UUID patterns and shows matching device details.
-- **Tesla Detector** – detects Tesla-style BLE name patterns and shows name, MAC, RSSI, age, signal quality, and detail view.
-- **Skimmer Detector** – checks for suspicious BLE serial/module names including HC-03, HC-05, HC-06, HC-08, BT-HC05, JDY-31, AT-09, HM-10, CC41-A, MLT-BT05, SPP-CA, and FFD0.
-- **Meta Detector** – looks for Meta / Ray-Ban smart-glasses related BLE advertisements.
-
-### Saved and Nearby Devices
-- **Saved Devices — Find and Track Known Devices** – saves named Wi-Fi or BLE targets on the SD card and reopens a confirmed address in Track Signal for live chart, LED ring, and optional audio guidance.
-- **Learn a Known Device** – guides a near/away/near signal exercise, shows the strength response and possible matches, and requires explicit confirmation before saving or associating an address.
-- **Nearby Signals** – provides separate Wi-Fi and BLE views ranked by smoothed recent signal strength, with history, trend, saved-target markers, Track, Save, and Associate actions.
-
-### GPS Tools
-- **GPS Stats** – displays live latitude, longitude, speed, altitude, and satellite data.
-- **Wiggle Wars** – included as a GPS menu item for expansion / custom use.
-
-### Audio Tools
-- **Sound Recorder** – records from the T-Embed ES7210 microphone into RAM, supports manual Record/Stop, playback through the I2S speaker, playback speed tuning, and a scroll-ready layout for future recording file browsing.
-
-### Misc Tools
-- **Battery Display** – shows battery percentage in the top bar with a shared/stable display value across menus.
-- **Device Info** – scrollable device information page showing firmware version, device type, chip, flash, heap, CPU, battery details, MAC addresses, and eFuse ID.
-- **SD Update** – supports firmware update flow from SD card.
-- **Brightness** – adjusts the TFT backlight with PWM brightness control.
-- **Themes** – switches between built-in UI themes including Dark, Flipper, Matrix, Poseidon, Phantom, Amber, Tron, TypeR, and Joker.
-- **Scan Defaults** – adjusts BLE scan time, WiFi scan time, WiFi result limit, deauth hop timing, Flock Hybrid presets, Packet Monitor hopping ON/OFF, and Packet Monitor hop timing for the current session.
-- **Dimming** – toggles inactivity-based screen and APA102 LED dimming.
-- **LEDs** – toggles the APA102 ring on or off at runtime.
-- **Rotation** – switches between normal and flipped landscape orientations.
-- **Alert Sound** – toggles detection alert chirps.
-- **Alert Volume** – adjusts detection alert chirp volume with a bar-style control.
-- **Menu Sounds** – toggles encoder/menu feedback sounds separately from detection alerts.
-- **Menu Volume** – adjusts encoder/menu feedback volume with a bar-style control.
-- **Reset Settings** – clears saved runtime preferences and restores default settings.
-- **Power Off** – safely powers down from the menu instead of using GPIO0 long-hold shutdown.
-
----
-
-## Hardware Target
-
-This firmware is currently built around the **LilyGO T-Embed ESP32-S3 (Non CC1101)**.
-
-### Main hardware used
-- **ESP32-S3 T-Embed**
-- **ST7789 320x170 display**
-- **Rotary encoder + encoder push button**
-- **APA102 LED ring**
-- **GPS module over UART**
-- **MicroSD card on dedicated HSPI bus**
-- **Optional I2S speaker output**
-
----
-
-## Arduino IDE Setup
-
-### User_Setup Files
-Make a backup of your files before replacing any. Drop the corresponding file/s (found above) for your device into `C:\Users\YOURUSERNAME\Documents\Arduino\libraries\TFT_eSPI-master`. And make sure you choose the correct file in the `User_Setup_Select.h` file.
-
-| File Name |
-|---|
-| `User_Setup_CYD.h` |
-| `User_Setup_CYD2USB.h` |
-| `User_Setup_LilyGo_T_Embed_S3.h` |
-| `User_Setup_nm_cyd_c5.h` |
-| `User_Setup_Select.h` |
-
-### Board settings
-- **Board:** `ESP32S3 Dev Module`
-- **Partition Scheme:** `Huge APP`
-
-### Required libraries
-- `TFT_eSPI`
-- `lvgl` (the sketch notes target **9.0.0**)
-- `RotaryEncoder` by mathertel
-- `APA102` by Pololu
-- `TinyGPSPlus`
-
-### ESP32 core features used
-- `WiFi`
-- `esp_wifi`
-- `BLEDevice`
-- `BLEScan`
-- `SD`
-- `Update`
-- `driver/i2s`
-
----
-
-## LVGL Notes
-
-Make sure your `lv_conf.h` has these enabled:
-
-```cpp
-#define LV_COLOR_DEPTH 16
-#define LV_USE_LIST    1
-#define LV_USE_LABEL   1
-#define LV_USE_BTN     1
-#define LV_USE_BAR     1
-```
-
----
-
-## TFT / Display Notes
-
-The firmware is written for a **320x170** layout and uses **TFT_eSPI**.
-You will need a correct `User_Setup.h` for your T-Embed display configuration.
-
-The sketch also includes a splash screen system using:
-- `splash.h`
-- `SPLASH_TIME_MS`
-
----
-
-## Pin Overview
-
-<details>
-<summary><strong>GPS</strong></summary>
-
-- `GPS_RX_PIN 44`
-- `GPS_TX_PIN 43`
-
-</details>
-
-<details>
-<summary><strong>SD Card (HSPI)</strong></summary>
-
-- `SD_CS   39`
-- `SD_SCLK 40`
-- `SD_MISO 38`
-- `SD_MOSI 41`
-
-</details>
-
-<details>
-<summary><strong>Device / UI</strong></summary>
-
-- `POWER_PIN   46`
-- `LCD_BL_PIN  15`
-- `ENCODER_A   1`
-- `ENCODER_B   2`
-- `ENCODER_BTN 0`
-
-</details>
-
-<details>
-<summary><strong>APA102</strong></summary>
-
-- `APA102_DI  42`
-- `APA102_CLK 45`
-
-</details>
-
-<details>
-<summary><strong>I2S Speaker</strong></summary>
-
-- `SOUND_I2S_BCLK 7`
-- `SOUND_I2S_WCLK 5`
-- `SOUND_I2S_DOUT 6`
-
-</details>
-
----
-
-## UI / Controls
-
-Rogue Radar is built around a **rotary encoder driven interface** using LVGL input groups.
-
-### Controls
-- **Rotate encoder** to move through menus and lists
-- **Press encoder** to select items
-- **T-Embed CC1101 top button:** press and release to go Back one level, or cancel text entry. It does nothing on the main menu. During a blocking scan, Back is deferred until the scan returns; holding the button does not repeat.
-- **Power On/Off** is available directly from the main menu (also **Misc Tools → Power Off**). On CC1101, unplug USB before confirming **Power Off**, then allow up to 15 seconds for shutdown. Turn it on with the hardware **PWR/QON** button or reconnect USB. The top Back button is not the PMU power button.
-
-The APA102 LEDs are also used for menu color feedback and scan animations. Optional speaker feedback can provide detection chirps and quiet menu tick/click sounds.
-
----
-
-## Features at a Glance
-
-- Multi-category tool layout
-- WiFi scanning and monitoring tools
-- BLE scanning and device-type detection
-- SD-backed named Wi-Fi/BLE targets and live locating through Track Signal
-- Guided near/away/near learning and signal-ranked Nearby Signals views
-- GPS live stats
-- SD card firmware update path
-- Adjustable display brightness and inactivity dimming
-- Runtime toggles for dimming, LEDs, sound, menu sounds, and display rotation
-- Session-adjustable scan defaults
-- LED ring startup and scanning effects
-- Optional detection alert chirps
-- Splash screen support
-- Embedded dashboard-style UI
-
----
-
-## Arduino Installation
-
-__METHOD 1__
-1. Open the sketch in **Arduino IDE**.
-2. Install the required libraries.
-3. Make sure `TFT_eSPI` is configured for your **LilyGO T-Embed**.
-4. Make sure your `lv_conf.h` options are enabled.
-5. Add your `splash.h` file if you are using the splash screen.
-6. Select **ESP32S3 Dev Module**.
-7. Set partition scheme to **Huge APP**.
-8. Compile and flash.
-
-__METHOD 2__ <br>
-
-## Web Flash Tool
-
-<a href="https://atomnft.github.io/Rogue-Radar/flash0.html" target="_blank" rel="noopener noreferrer">
-  <img src="Images/flash-button.png" alt="Flash-Tool" width="450" height="200">
-</a>
-
----
-
-## Roadmap Ideas
-
-Saved Devices, Learn a Known Device, and Nearby Signals are implemented in
-`v1.1.0-cc1101.11`. See the [feature plan](FEATURE_PLAN.md) for storage,
-workflow, identity limits, and the remaining physical validation work.
-
-Other ideas:
-
-- Add logging/export for scan results
-- Add richer BLE classification and filtering
-- Expand GPS tool set
-- Add more SD card utilities
-- Add icon assets and polish for each tool page
-
----
-
-## Disclaimer
-
-This project is intended for educational, research, and defensive awareness purposes. Be responsible, follow local laws, and only use wireless analysis features where you are authorized to do so.
-
----
 
 ## Credits
 
-Rogue Radar would not be possible without the work and inspiration from these projects and creators:
+- [ATOMNFT / Rogue-Radar](https://github.com/ATOMNFT/Rogue-Radar) — original firmware and project foundation.
+- [JustCallMeKoKo / ESP32Marauder](https://github.com/justcallmekoko/ESP32Marauder) — Wi-Fi/BLE research tools and inspiration.
+- [jbohack / nyanBOX](https://github.com/jbohack/nyanBOX) — badge hardware, firmware, and BLE ideas.
+- [spacehuhn / PacketMonitor32](https://github.com/spacehuhn/PacketMonitor32) — packet monitoring and graph inspiration.
+- [GhostESP Revival](https://github.com/GhostESP-Revival/GhostESP) — BLE detector ideas.
+- [Esp32vsEvil / TeslaScanner](https://github.com/Esp32vsEvil/TeslaScanner) — Tesla scanner inspiration.
+- [0xXyc / flock-you-wifi-recon](https://github.com/0xXyc/flock-you-wifi-recon) — Flock-related matching and detection research.
 
-- **JustCallMeKoKo / ESP32Marauder**  
-  Huge credit to JustCallMeKoKo for the continued work on ESP32Marauder and for helping push ESP32-based WiFi/BLE research tools forward.  
-  https://github.com/justcallmekoko/ESP32Marauder
-
-- **jbohack / nyanBOX**  
-  Big credit to jbohack for the nyanBOX hardware and firmware work, which helped inspire several BLE-focused ideas and detector improvements in Rogue Radar.  
-  https://github.com/jbohack/nyanBOX
-
-- **spacehuhn / PacketMonitor32**  
-  Credit to spacehuhn for PacketMonitor32, which inspired the live Packet Monitor feature and WiFi packet activity graph in Rogue Radar.  
-  https://github.com/spacehuhn/PacketMonitor32
-
-- **GhostESP Revival**  
-  Credit to the GhostESP Revival project for BLE detection ideas that helped improve AirTag-like, Flipper, and skimmer-style detection logic.  
-  https://github.com/GhostESP-Revival/GhostESP
-
-- **Esp32vsEvil / TeslaScanner**  
-  Credit to Esp32vsEvil for the TeslaScanner idea that inspired the Tesla BLE detector added to Rogue Radar.  
-  https://github.com/Esp32vsEvil/TeslaScanner
-  
-- **0xXyc / flock-you-wifi-recon**  
-  Credit to 0xXyc for the flock-you-wifi-recon project, which helped inspire Rogue Radar’s expanded Flock detection improvements, including Flock-related MAC/OUI matching, confidence labels, method labels, BLE manufacturer ID checks, and improved Flock Hybrid detail handling. This project is also helping guide the upcoming Raven Detector feature planned for Rogue Radar.  
-  https://github.com/0xXyc/flock-you-wifi-recon
-
-## Saved Devices, learning, and nearby signals
-
-**Saved Devices — Find and Track Known Devices** stores a custom name, radio
-type, confirmed address, advertised details, and last-seen data on the SD card.
-Open a saved entry later to find and locate it with Track Signal's live chart,
-LED ring, and optional audio guidance. If several confirmed addresses are seen,
-the firmware asks which one to track and does not combine their RSSI readings.
-
-The library uses bounded, versioned, CRC-checked files under its own SD
-directory. Updates use temporary and last-known-good files for recovery. A
-missing or unreadable card makes the saved library unavailable; the firmware
-does not silently create a second copy in internal flash. Live scanning and
-unsaved tracking remain available.
-
-**Learn a Known Device** starts from a selected nearby Wi-Fi or BLE signal and
-guides a near/away/near capture. Position the target first, press **Capture**,
-hold it still, then press **Next** after capture finishes. Return to the same
-near position and orientation for the final phase. Each capture stops once
-enough evidence is collected, or after 30 seconds with an insufficient-sample
-message. You can mark other visible signals as excluded
-neighbors. The result reports whether the selected signal changed consistently
-with the exercise and can show advertisement-based possible matches. These are
-search aids only. The device never merges, relinks, saves, or begins tracking a
-candidate without an explicit user action.
-
-BLE addresses can rotate, advertised names and payloads can be shared, and RSSI
-does not establish precise distance, direction, identity, or ownership.
-Resolving private BLE addresses would require pairing identity material that
-this feature does not have. New addresses therefore require explicit
-association with a saved device.
-
-**Nearby Signals** provides separate Wi-Fi and BLE lists ranked by smoothed
-recent RSSI. Rows show name or address, recent history, trend, and saved status;
-selecting a row offers Track, Save, and association actions. Ordering freezes
-while navigating so the selected row stays stable.
-
-Both `v1.1.0-cc1101.12` firmware profiles build, with passing host storage,
-signal, radio, and UI lifecycle tests. CC1101 live discovery, Track/Back
-handoffs, and controlled Amazfit Band 7 learning passed. A seated 2 GB FAT32
-card passed physical create/read/rename/address-edit/delete tests with the
-display running. The named Amazfit entry survived restart and reopened through
-Saved Devices into live Track Signal. Lost-signal/reacquisition and saved-entry
-Pocket Mode checks remain pending; see [validation status](FEATURE_PLAN.md#validation-status).
-
-For CC1101 card-detection failures, LilyGo recommends a **SanDisk microSD card
-of 32 GB or smaller** in its [hardware FAQ](https://github.com/Xinyuan-LilyGO/T-Embed-CC1101#unable-to-detect-sd-card).
-Formatting cannot fix a card that never responds to initial SPI commands.
-
-## Timed and Continuous scanning
-
-Supported scanner pages have a compact **Timed / Continuous** mode selector,
-**Start / Stop**, and speaker/lightbulb alert toggles. Mode is remembered per
-tool; opening a page does not automatically start scanning. Timed sessions
-use the configured scan duration (Flock Hybrid uses the sum of its BLE and
-Wi-Fi phase durations). Continuous sessions run until Stop or Back.
-
-This applies to Network Scanner, Station Scanner, Deauth Detector, Channel
-Analyzer, Packet Monitor, WiFi Mapper, PineAP Hunter, Pwnagotchi Watch, Flock
-Detector, Flock Hybrid, and all ten BLE scanner/detector pages. Connect to AP,
-LAN Host Discovery, and Gateway Info keep their existing workflows.
-
-Stop retains results. Back stops and releases the radio before leaving.
-Opening a result suspends the session; returning from the detail
-page resumes it. Track Signal uses this same handoff, so it owns the radio
-until you return. Timed sessions preserve their remaining scan time during this pause. Results are bounded in memory; they are not a permanent encounter log.
-
-The speaker and lightbulb buttons change the existing saved **Alert Sound**
-and **Light Alert** preferences. A crossed icon means disabled. The global
-LED master switch still applies. Matching repeat sightings are suppressed
-until the device has been absent for at least 30 seconds and its alert
-cooldown has elapsed; a bounded alert cache can forget older devices.
-
-Active sessions continue in Pocket Mode and are protected from automatic
-return-home. Pocket Mode keeps monitoring and configured alerts running;
-this differs from deep sleep or full shutdown. Flock Hybrid alternates BLE
-and Wi-Fi phases, so it does not listen to both radios simultaneously.
+Use wireless analysis tools responsibly and only where authorized.
