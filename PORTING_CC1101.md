@@ -88,7 +88,7 @@ ordinary LEDC PWM is not equivalent and must not be used on this profile.
 
 The CC1101 model has 16 MB flash and 8 MB OPI PSRAM. The PlatformIO board
 settings enable QIO flash and OPI PSRAM. The original environment retains the
-documented Huge APP partition layout. That layout has no OTA slot, so the
+documented Huge APP partition layout. That layout has no second OTA app slot, so the
 sketch's `Update.begin(..., U_FLASH)` SD update path must be considered
 unavailable on the original profile unless it is moved to an OTA-capable 16 MB
 partition table. The CC1101 profile uses `default_16MB.csv`; confirm the final
