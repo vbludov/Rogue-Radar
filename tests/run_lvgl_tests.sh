@@ -52,3 +52,15 @@ if [[ $old_status -ne 134 ]]; then
     exit 1
 fi
 echo "PASS original cancel recreation reproduced allocator failure (exit $old_status)"
+
+"${CXX:-g++}" -std=c++11 -O0 -Wall -Wextra -Werror \
+    -I"$tmp_dir" -I"$lvgl_dir" -DLV_CONF_INCLUDE_SIMPLE \
+    "$repo_root/tests/scan_session_ui_test.cpp" \
+    "$tmp_dir/liblvgl.a" -lm -o "$tmp_dir/scan_session_ui_test"
+"$tmp_dir/scan_session_ui_test"
+
+"${CXX:-g++}" -std=c++11 -O0 -Wall -Wextra -Werror \
+    -I"$tmp_dir" -I"$lvgl_dir" -DLV_CONF_INCLUDE_SIMPLE \
+    "$repo_root/tests/lvgl_scan_navigation_readiness_test.cpp" \
+    "$tmp_dir/liblvgl.a" -lm -o "$tmp_dir/lvgl_scan_navigation_readiness_test"
+"$tmp_dir/lvgl_scan_navigation_readiness_test"

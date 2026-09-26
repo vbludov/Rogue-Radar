@@ -98,6 +98,7 @@ static void processSignalTracker() {
     if (!signalTrackerActive) return;
     if (trackerExitPending) {
         if (trackerRadio.readyToRelease()) finishTrackerBack();
+        else lv_label_set_text(trackerStatusLabel, trackerRadio.status());
         return;
     }
     trackerRadio.poll();

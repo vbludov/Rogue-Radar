@@ -96,6 +96,7 @@
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include "continuous_ble_scan.h"
 #include <TinyGPS++.h>
 #include <SPI.h>
 #include <SD.h>
@@ -730,6 +731,7 @@ struct PineAPEntry {
     int8_t lastRSSI;
     int    ssidCount;            // total unique SSIDs observed
     char   ssids[PINEAP_SSID_SLOTS][33]; // first N for display
+    uint32_t lastSeen;
 };
 
 static PineAPEntry pineapEntries[MAX_PINEAP_BSSIDS];
@@ -830,6 +832,20 @@ static lv_obj_t      *hybridBackBtn   = nullptr;
 static lv_obj_t      *hybridScanBtn   = nullptr;
 static lv_timer_t    *hybridStartTimer = nullptr;
 static uint32_t       hybridBleHeardCount = 0;
+static ContinuousBleScan hybridBleScan;
+enum class HybridScanPhase : uint8_t { Idle, Ble, Wifi };
+static HybridScanPhase hybridPhase = HybridScanPhase::Idle;
+static uint32_t hybridWifiPhaseStartedMs = 0;
+static uint32_t hybridWifiLastHopMs = 0;
+static uint8_t hybridWifiChannel = 1;
+
+struct HybridBleMailbox {
+    char name[33], mac[18], reason[24], method[24], confidence[8], type[20];
+    int8_t rssi;
+    bool ready;
+};
+static HybridBleMailbox hybridBleMailbox{};
+static portMUX_TYPE hybridBleMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ISR pending slot for the WiFi half of the hybrid scanner
 static char             hybridPendingName[33];
@@ -864,6 +880,7 @@ struct BLEEntry {
     BLEDeviceType type;
     char          mfgHint[14]; // short manufacturer hint for list row
     char          flipperColor[13]; // Black / White / Transparent / Unknown
+    uint32_t      lastSeen;
 };
 
 static BLEEntry bleEntries[MAX_BLE_RESULTS];
@@ -942,6 +959,70 @@ struct SmartChargerEntry {
 static SmartChargerEntry chargerEntries[MAX_CHARGER_RESULTS];
 static int               chargerEntryCount = 0;
 
+enum class LiveBleMode : uint8_t {
+    Generic,
+    AirTag,
+    Flipper,
+    NyanBox,
+    Axon,
+    Raven,
+    Charger,
+    Tesla,
+    Skimmer,
+    Meta,
+};
+
+// A callback-owned observation is fully flattened before it crosses from the
+// BLE task to loop(). This keeps all result arrays and LVGL on the UI task and
+// avoids retaining BLEAdvertisedDevice/BLEScanResults allocations.
+struct LiveBleObservation {
+    LiveBleMode mode;
+    BLEDeviceType type;
+    char name[33];
+    char mac[18];
+    bool hasName;
+    bool hasManufacturer;
+    int8_t rssi;
+    uint32_t seenMs;
+    char flipperColor[13];
+    uint16_t nyanLevel;
+    char nyanVersion[16];
+    char ravenUuid[41];
+    char ravenFw[16];
+    uint8_t ravenUuidHits;
+    char chargerMethod[24];
+    char chargerUuid[41];
+    char chargerMfg[33];
+    uint8_t chargerConfidence;
+};
+
+// Explicit declarations keep Arduino's generated prototypes below these types.
+static BLEDeviceType classifyBleAdvertisement(BLEAdvertisedDevice &dev);
+static bool liveBleModeMatches(LiveBleMode mode, BLEDeviceType type,
+                               BLEAdvertisedDevice &dev);
+static void liveBleMailboxPush(const LiveBleObservation &observation);
+static bool liveBleMailboxPop(LiveBleObservation &observation);
+static void resetLiveBleResults(LiveBleMode mode);
+static bool applyLiveBleObservation(const LiveBleObservation &o);
+static bool startLiveBleScan(LiveBleMode mode);
+static void rebuildLiveFilteredList(lv_obj_t *list, lv_obj_t *back, lv_obj_t *start,
+                                    LiveBleMode mode);
+static bool formatLiveBleRow(LiveBleMode mode, int index, char *row, size_t rowSize);
+
+static constexpr uint8_t LIVE_BLE_MAILBOX_CAPACITY = 12;
+static LiveBleObservation liveBleMailbox[LIVE_BLE_MAILBOX_CAPACITY];
+static uint8_t liveBleMailboxHead = 0;
+static uint8_t liveBleMailboxCount = 0;
+static uint32_t liveBleMailboxDrops = 0;
+static portMUX_TYPE liveBleMailboxMux = portMUX_INITIALIZER_UNLOCKED;
+static ContinuousBleScan liveBleRadio;
+static LiveBleMode liveBleMode = LiveBleMode::Generic;
+static uint32_t liveBleEntryLastSeen[MAX_BLE_RESULTS] = {0};
+static bool liveBleResultsDirty = false;
+static bool liveBleNewAlert = false;
+static uint32_t liveBleLastUiRefreshMs = 0;
+static int liveBleProtectedIndex = -1;
+
 
 // ════════════════════════════════════════════════════════════════
 //  FORWARD DECLARATIONS
@@ -1016,6 +1097,19 @@ void createTeslaDetector();
 void createTeslaDetail(int idx);
 void createSkimmerScanner();
 void createMetaDetector();
+static bool startLiveBleGeneric();
+static bool startLiveBleAirTag();
+static bool startLiveBleFlipper();
+static bool startLiveBleNyan();
+static bool startLiveBleAxon();
+static bool startLiveBleRaven();
+static bool startLiveBleCharger();
+static bool startLiveBleTesla();
+static bool startLiveBleSkimmer();
+static bool startLiveBleMeta();
+static void pollLiveBleUi();
+static bool stopLiveBleScan();
+static int liveBleResultCount();
 static void cb_bleToolBack(lv_event_t *e);
 static void cb_bleDetailBack(lv_event_t *e);
 
@@ -2637,6 +2731,8 @@ static void styleListBtn(lv_obj_t *btn) {
 
 static void setGroup(lv_group_t *g)       { lv_indev_set_group(lvIndev, g); }
 static void deleteGroup(lv_group_t **g)   { if (*g) { lv_group_delete(*g); *g = nullptr; } }
+
+#include "scan_session_ui.h"
 
 // ════════════════════════════════════════════════════════════════
 //  MAIN MENU
@@ -6406,9 +6502,16 @@ static void refreshWiFiMenuLanDiscoveryItem() {
 }
 
 static void cb_wifiMenuBack(lv_event_t *e) {
-    lv_screen_load_anim(mainScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
+    wifiMenuScreen = nullptr;
     deleteGroup(&wifiMenuGroup);
+    wifiLanDiscoveryBtn = nullptr;
+    wifiLanDiscoveryBtnHasEvent = false;
+    wifiLanDiscoveryBtnEnabled = false;
+    wifiGatewayInfoBtn = nullptr;
+    wifiGatewayInfoBtnHasEvent = false;
+    wifiGatewayInfoBtnEnabled = false;
     setGroup(navGroup);
+    lv_screen_load_anim(mainScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, true);
     setAllLEDs(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
 }
 
@@ -6603,12 +6706,55 @@ static int doWiFiScan() {
     return n;
 }
 
+// Nonblocking scan primitive used by the live Network/Channel/PineAP pages.
+// Connect-to-AP keeps the bounded blocking helper above because its scan is a
+// one-shot prerequisite for the connection workflow.
+static bool liveWifiScanInFlight = false;
+static bool liveWifiScanStopping = false;
+
+static bool liveWifiScanStartCycle() {
+    if (liveWifiScanInFlight || liveWifiScanStopping) return false;
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    const int rc = WiFi.scanNetworks(true, true);
+    if (rc != WIFI_SCAN_RUNNING && rc < 0) return false;
+    liveWifiScanInFlight = true;
+    return true;
+}
+
+// Returns WIFI_SCAN_RUNNING until a non-negative SCAN_DONE result is ready.
+// A negative FAILED value is deliberately not treated as drained: Arduino can
+// publish it before its delayed SCAN_DONE handler releases scanner ownership.
+static int liveWifiScanResult() {
+    if (!liveWifiScanInFlight) return WIFI_SCAN_FAILED;
+    const int result = WiFi.scanComplete();
+    if (result < 0) return WIFI_SCAN_RUNNING;
+    liveWifiScanInFlight = false;
+    return result;
+}
+
+static bool liveWifiScanStop() {
+    if (liveWifiScanInFlight && !liveWifiScanStopping) {
+        esp_wifi_scan_stop();
+        liveWifiScanStopping = true;
+    }
+    if (liveWifiScanInFlight) {
+        if (WiFi.scanComplete() < 0) return false;
+        liveWifiScanInFlight = false;
+    }
+    WiFi.scanDelete();
+    liveWifiScanStopping = false;
+    return true;
+}
+
 // Deauth Detector UI object pointers.
 // Kept above shared back/cleanup callbacks so those callbacks can safely clear them.
 static lv_obj_t *deauthCountLbl  = nullptr;
 static lv_obj_t *deauthEventList = nullptr;
 static lv_obj_t *deauthStatsLbl  = nullptr;
 static lv_obj_t *deauthStatsBar  = nullptr;
+static lv_obj_t *deauthBackBtn   = nullptr;
+static lv_obj_t *deauthStartBtn  = nullptr;
 
 // ════════════════════════════════════════════════════════════════
 //  SHARED BACK CALLBACKS
@@ -6648,6 +6794,7 @@ static void scheduleWiFiMenuRefresh(lv_obj_t *oldToolScreen) {
 }
 
 static void cb_wifiToolBack(lv_event_t *e) {
+    if (scanDeferBack(cb_wifiToolBack)) return;
     if (deauthActive) {
         deauthActive = false;
         esp_wifi_set_promiscuous(false);
@@ -6755,6 +6902,23 @@ static lv_obj_t *scanList      = nullptr;
 static lv_obj_t *scanStatusLbl = nullptr;
 static lv_obj_t *scanBackBtn   = nullptr;   // saved so rebuildScanList can rebuild the group
 static lv_obj_t *scanScanBtn   = nullptr;
+static char scanFocusedBssid[18] = {};
+static void rebuildScanList();
+
+static bool networkScanStart() {
+    if (!scanSessionIsResume()) {
+        wifiEntryCount = 0;
+        rebuildScanList();
+    }
+    scanSessionPhase("scanning networks");
+    return liveWifiScanStartCycle();
+}
+
+static bool networkScanStop() {
+    return liveWifiScanStop();
+}
+
+static int networkScanCount() { return wifiEntryCount; }
 
 static void rebuildScanList() {
     // Rebuild group first — lv_obj_clean will invalidate the old list buttons
@@ -6766,6 +6930,7 @@ static void rebuildScanList() {
     setGroup(wifiToolGroup);
 
     lv_obj_clean(scanList);
+    lv_obj_t *restoreFocus = nullptr;
     for (int i = 0; i < wifiEntryCount; i++) {
         char row[56];
         const char *lock = wifiEntries[i].open ? " " : LV_SYMBOL_CLOSE;
@@ -6780,31 +6945,52 @@ static void rebuildScanList() {
         lv_obj_set_style_text_color(btn, rssiColor(wifiEntries[i].rssi),
                                     LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createNetworkDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createNetworkDetail,
+                                  (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(wifiToolGroup, btn);
+        if (scanFocusedBssid[0] && strcmp(scanFocusedBssid, wifiEntries[i].bssid) == 0) restoreFocus = btn;
     }
+    scanRestoreControls();
+    if (restoreFocus) lv_group_focus_obj(restoreFocus);
+    scanFocusedBssid[0] = '\0';
 }
 
-static void cb_doScan(lv_event_t *e) {
-    lv_label_set_text(scanStatusLbl, LV_SYMBOL_REFRESH "  Scanning...");
-    lv_obj_set_style_text_color(scanStatusLbl, lv_color_hex(TH.warn), LV_PART_MAIN);
-    lv_timer_handler();
+static void networkScanPoll() {
+    const int result = liveWifiScanResult();
+    if (result == WIFI_SCAN_RUNNING) return;
 
-    // Green spinner while scan blocks core 1
-    startLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
-    int found = doWiFiScan();
-    stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
+    if (scanList && wifiToolGroup) {
+        lv_obj_t *focused = lv_group_get_focused(wifiToolGroup);
+        for (int i = 0; i < wifiEntryCount; ++i) {
+            if (lv_obj_get_child(scanList, i) == focused) {
+                snprintf(scanFocusedBssid, sizeof(scanFocusedBssid), "%s", wifiEntries[i].bssid);
+                break;
+            }
+        }
+    }
 
-    char buf[40];
-    snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI "  %d network%s found",
-             found, found == 1 ? "" : "s");
-    lv_label_set_text(scanStatusLbl, buf);
-    lv_obj_set_style_text_color(scanStatusLbl,
-        found > 0 ? lv_color_hex(TH.success) : lv_color_hex(TH.textDim),
-        LV_PART_MAIN);
-
+    int count = result;
+    if (count > wifiMaxResults) count = wifiMaxResults;
+    if (count > MAX_WIFI_RESULTS) count = MAX_WIFI_RESULTS;
+    wifiEntryCount = count;
+    for (int i = 0; i < count; ++i) {
+        String ssid = WiFi.SSID(i);
+        if (ssid.length() == 0) ssid = "<hidden>";
+        snprintf(wifiEntries[i].ssid, sizeof(wifiEntries[i].ssid), "%s", ssid.c_str());
+        String bssid = WiFi.BSSIDstr(i);
+        snprintf(wifiEntries[i].bssid, sizeof(wifiEntries[i].bssid), "%s", bssid.c_str());
+        wifiEntries[i].rssi = (int8_t)WiFi.RSSI(i);
+        wifiEntries[i].channel = (uint8_t)WiFi.channel(i);
+        wifiEntries[i].open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+        snprintf(wifiEntries[i].authStr, sizeof(wifiEntries[i].authStr), "%s",
+                 authModeStr(WiFi.encryptionType(i)));
+    }
+    WiFi.scanDelete();
+    sortByRSSI();
     rebuildScanList();
+    scanSessionPhase(count == 1 ? "network found" : "networks found");
+    if (!liveWifiScanStartCycle()) scanSessionError("WiFi scan restart failed");
 }
 
 void createNetworkScanner() {
@@ -6830,13 +7016,17 @@ void createNetworkScanner() {
 
     scanBackBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
     scanScanBtn = createActionBtn(wifiToolScreen,
-                                        LV_SYMBOL_REFRESH "  Scan", cb_doScan);
+                                        LV_SYMBOL_PLAY "  Start", [](lv_event_t *) {});
 
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
     lv_group_add_obj(wifiToolGroup, scanBackBtn);
     lv_group_add_obj(wifiToolGroup, scanScanBtn);
     setGroup(wifiToolGroup);
+
+    attachScanSession(wifiToolScreen, &wifiToolGroup, scanBackBtn, scanScanBtn,
+                      scanStatusLbl, "scanNet", (uint32_t)wifiScanSeconds * 1000UL,
+                      {networkScanStart, networkScanPoll, networkScanStop, networkScanCount});
 
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -8473,7 +8663,8 @@ static void stationRefreshList() {
         lv_obj_t *btn = lv_list_add_btn(stationList, nullptr, "");
         styleListBtn(btn);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createStationDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createStationDetail,
+                                  (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
         stationRowBtns[i] = btn;
@@ -8504,22 +8695,24 @@ static void stationRefreshList() {
     }
 }
 
-static void stationScanStop() {
-    if (!stationScanActive) return;
+static bool stationScanStop() {
+    if (!stationScanActive) return true;
     stationScanActive = false;
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(nullptr);
     stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
-    if (stationStartLbl) lv_label_set_text(stationStartLbl, LV_SYMBOL_PLAY "  Start");
+    return true;
 }
 
-static void stationScanStart() {
-    stationEntryCount = 0;
-    stationApCount = 0;
-    stationEapolTotal = 0;
-    memset(stationEntries, 0, sizeof(stationEntries));
-    memset(stationAps, 0, sizeof(stationAps));
-    stationClearRows();
+static bool stationScanStart() {
+    if (!scanSessionIsResume()) {
+        stationEntryCount = 0;
+        stationApCount = 0;
+        stationEapolTotal = 0;
+        memset(stationEntries, 0, sizeof(stationEntries));
+        memset(stationAps, 0, sizeof(stationAps));
+        stationClearRows();
+    }
     stationScanChannel = 1;
 
     WiFi.mode(WIFI_STA);
@@ -8538,7 +8731,8 @@ static void stationScanStart() {
     stationScanActive = true;
 
     startLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b, 150);
-    if (stationStartLbl) lv_label_set_text(stationStartLbl, LV_SYMBOL_STOP "  Stop");
+    scanSessionPhase("stations");
+    return true;
 }
 
 static void stationScanTimerCb(lv_timer_t *t) {
@@ -8577,6 +8771,16 @@ static void cb_stationScanToggle(lv_event_t *e) {
     stationScanTimerCb(nullptr);
 }
 
+static void stationScanPoll() {
+    static uint32_t lastUpdateMs = 0;
+    const uint32_t now = millis();
+    if (now - lastUpdateMs < 250) return;
+    lastUpdateMs = now;
+    stationScanTimerCb(nullptr);
+}
+
+static int stationScanCount() { return stationEntryCount; }
+
 void createStationScanner() {
     if (wifiToolScreen) { lv_obj_delete(wifiToolScreen); wifiToolScreen = nullptr; }
     wifiToolScreen = lv_obj_create(nullptr);
@@ -8609,7 +8813,7 @@ void createStationScanner() {
     stationEmptyLbl = nullptr;
 
     stationBackBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
-    stationStartBtn = createActionBtn(wifiToolScreen, LV_SYMBOL_PLAY "  Start", cb_stationScanToggle);
+    stationStartBtn = createActionBtn(wifiToolScreen, LV_SYMBOL_PLAY "  Start", [](lv_event_t *) {});
     stationStartLbl = lv_obj_get_child(stationStartBtn, 0);
 
     deleteGroup(&wifiToolGroup);
@@ -8622,9 +8826,11 @@ void createStationScanner() {
     setGroup(wifiToolGroup);
     lv_group_focus_obj(stationStartBtn);
 
-    if (stationScanTimer) { lv_timer_delete(stationScanTimer); stationScanTimer = nullptr; }
-    stationScanTimer = lv_timer_create(stationScanTimerCb, 1000, nullptr);
     stationRefreshList();
+
+    attachScanSession(wifiToolScreen, &wifiToolGroup, stationBackBtn, stationStartBtn,
+                      stationStatusLbl, "scanSta", (uint32_t)wifiScanSeconds * 1000UL,
+                      {stationScanStart, stationScanPoll, stationScanStop, stationScanCount}, true);
 
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -8875,7 +9081,14 @@ static void deauth_refresh_cb(lv_timer_t *) {
     updateDeauthRate();
 
     if (deauthTotal > deauthSoundedTotal) {
-        playDeauthChirp();
+        int unseen = deauthTotal - deauthSoundedTotal;
+        if (unseen > MAX_DEAUTH) unseen = MAX_DEAUTH;
+        bool alert = false;
+        for (int i = 0; i < unseen; ++i) {
+            int slot = ((deauthHead - 1 - i) + MAX_DEAUTH) % MAX_DEAUTH;
+            if (scanShouldAlert(deauthLog[slot].src)) alert = true;
+        }
+        if (alert) playDeauthChirp();
         deauthSoundedTotal = deauthTotal;
     }
 
@@ -8930,8 +9143,44 @@ static void cb_deauthStatsBack(lv_event_t *e) {
 }
 
 static void cb_deauthStatsOpen(lv_event_t *e) {
-    createDeauthStats();
+    scanRequestNavigation([](int) { createDeauthStats(); }, 0);
 }
+
+static bool deauthScanStart() {
+    if (!scanSessionIsResume()) {
+        deauthTotal = deauthHead = deauthSoundedTotal = 0;
+        deauthRssiSum = deauthRssiCount = 0;
+        deauthStrongestRSSI = -127;
+        deauthCurrentRate = deauthLastRateMs = deauthLastRateTotal = 0;
+    }
+    WiFi.mode(WIFI_STA); WiFi.disconnect();
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous_rx_cb(sniffer_cb);
+    esp_wifi_set_promiscuous(true);
+    deauthChannel = 1;
+    deauthActive = true;
+    scanSessionPhase("deauth frames");
+    return true;
+}
+
+static bool deauthScanStop() {
+    deauthActive = false;
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
+    stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
+    return true;
+}
+
+static void deauthScanPoll() {
+    static uint32_t lastMs = 0;
+    if (millis() - lastMs < 500) return;
+    lastMs = millis();
+    deauth_refresh_cb(nullptr);
+}
+
+static int deauthScanCount() { return deauthTotal; }
 
 void createDeauthStats() {
     if (wifiDetailScreen) { lv_obj_delete(wifiDetailScreen); wifiDetailScreen = nullptr; }
@@ -9027,39 +9276,27 @@ void createDeauthDetector() {
     lv_obj_set_style_pad_row(deauthEventList,  1, LV_PART_MAIN);
 
     lv_obj_t *initLbl =
-        lv_list_add_text(deauthEventList, "Monitoring... (no events yet)");
+        lv_list_add_text(deauthEventList, "No events yet.");
     if (initLbl)
         lv_obj_set_style_text_color(initLbl, lv_color_hex(TH.textDim), LV_PART_MAIN);
 
     lv_obj_t *backBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
     lv_obj_t *statsBtn = createActionBtn(wifiToolScreen, "Stats", cb_deauthStatsOpen);
+    lv_obj_set_size(statsBtn, 60, 20);
+    lv_obj_align(statsBtn, LV_ALIGN_BOTTOM_RIGHT, -6, -34);
+    deauthBackBtn = backBtn;
+    deauthStartBtn = createActionBtn(wifiToolScreen, LV_SYMBOL_PLAY "  Start", [](lv_event_t *) {});
 
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
     lv_group_add_obj(wifiToolGroup, backBtn);
     lv_group_add_obj(wifiToolGroup, statsBtn);
+    lv_group_add_obj(wifiToolGroup, deauthStartBtn);
     setGroup(wifiToolGroup);
 
-    // Start sniffer
-    deauthTotal  = 0;
-    deauthHead   = 0;
-    deauthSoundedTotal = 0;
-    deauthRssiSum = 0;
-    deauthRssiCount = 0;
-    deauthStrongestRSSI = -127;
-    deauthCurrentRate = 0;
-    deauthLastRateMs = 0;
-    deauthLastRateTotal = 0;
-    deauthActive = true;
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    esp_wifi_set_promiscuous(true);
-    esp_wifi_set_promiscuous_rx_cb(sniffer_cb);
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    deauthChannel = 1;
-
-    if (deauthTimer) { lv_timer_delete(deauthTimer); deauthTimer = nullptr; }
-    deauthTimer = lv_timer_create(deauth_refresh_cb, 1000, nullptr);
+    attachScanSession(wifiToolScreen, &wifiToolGroup, deauthBackBtn, deauthStartBtn,
+                      deauthCountLbl, "scanDeauth", (uint32_t)wifiScanSeconds * 1000UL,
+                      {deauthScanStart, deauthScanPoll, deauthScanStop, deauthScanCount}, true);
 
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -9069,6 +9306,9 @@ void createDeauthDetector() {
 // ════════════════════════════════════════════════════════════════
 static lv_obj_t *chanStatusLbl = nullptr;
 static lv_obj_t *chanChartArea = nullptr;
+static lv_obj_t *chanBackBtn = nullptr;
+static lv_obj_t *chanStartBtn = nullptr;
+static int chanTotalNetworks = 0;
 
 static void buildChannelBars() {
     if (!chanChartArea) return;
@@ -9126,23 +9366,21 @@ static void buildChannelBars() {
     }
 }
 
-static void cb_doChannelScan(lv_event_t *e) {
-    lv_label_set_text(chanStatusLbl, LV_SYMBOL_REFRESH "  Scanning channels...");
-    lv_obj_set_style_text_color(chanStatusLbl, lv_color_hex(TH.warn), LV_PART_MAIN);
-    if (chanChartArea) lv_obj_clean(chanChartArea);
-    lv_timer_handler();
+static bool channelScanStart() {
+    if (!scanSessionIsResume()) {
+        chanTotalNetworks = 0;
+        for (int i = 0; i < 14; ++i) { chanNetCount[i] = 0; chanMaxRSSI[i] = -100; }
+        buildChannelBars();
+    }
+    scanSessionPhase("channels");
+    return liveWifiScanStartCycle();
+}
+
+static void channelScanPoll() {
+    int n = liveWifiScanResult();
+    if (n == WIFI_SCAN_RUNNING) return;
 
     for (int i = 0; i < 14; i++) { chanNetCount[i] = 0; chanMaxRSSI[i] = -100; }
-
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-
-    // Green spinner while scan blocks core 1
-    startLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
-    int n = WiFi.scanNetworks(false, true);
-    stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
-    if (n < 0) n = 0;
 
     for (int i = 0; i < n; i++) {
         int ch = WiFi.channel(i);
@@ -9153,6 +9391,7 @@ static void cb_doChannelScan(lv_event_t *e) {
         }
     }
     WiFi.scanDelete();
+    chanTotalNetworks = n;
 
     // Count how many channels are occupied
     int occupied = 0;
@@ -9168,7 +9407,11 @@ static void cb_doChannelScan(lv_event_t *e) {
         LV_PART_MAIN);
 
     buildChannelBars();
+    if (!liveWifiScanStartCycle()) scanSessionError("Channel scan restart failed");
 }
+
+static bool channelScanStop() { return liveWifiScanStop(); }
+static int channelScanCount() { return chanTotalNetworks; }
 
 void createChannelAnalyzer() {
     if (wifiToolScreen) { lv_obj_delete(wifiToolScreen); wifiToolScreen = nullptr; }
@@ -9199,14 +9442,20 @@ void createChannelAnalyzer() {
 
     lv_obj_t *backBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
     lv_obj_t *scanBtn = createActionBtn(wifiToolScreen,
-                                        LV_SYMBOL_REFRESH "  Scan",
-                                        cb_doChannelScan);
+                                        LV_SYMBOL_PLAY "  Start",
+                                        [](lv_event_t *) {});
+    chanBackBtn = backBtn;
+    chanStartBtn = scanBtn;
 
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
     lv_group_add_obj(wifiToolGroup, backBtn);
     lv_group_add_obj(wifiToolGroup, scanBtn);
     setGroup(wifiToolGroup);
+
+    attachScanSession(wifiToolScreen, &wifiToolGroup, chanBackBtn, chanStartBtn,
+                      chanStatusLbl, "scanChannel", (uint32_t)wifiScanSeconds * 1000UL,
+                      {channelScanStart, channelScanPoll, channelScanStop, channelScanCount});
 
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -9373,18 +9622,25 @@ static void packetMonTimerCb(lv_timer_t *t) {
     packetMonUpdateUI();
 }
 
-static void packetMonStop() {
-    if (!packetMonitorActive) return;
+static void packetMonPoll() {
+    static uint32_t lastMs = 0;
+    if (millis() - lastMs < PACKET_MONITOR_UPDATE_MS) return;
+    lastMs = millis();
+    packetMonUpdateUI();
+}
+
+static bool packetMonStop() {
+    if (!packetMonitorActive) return true;
     packetMonitorActive = false;
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(nullptr);
     stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
-    if (packetMonStartLbl) lv_label_set_text(packetMonStartLbl, LV_SYMBOL_PLAY "  Start");
     packetMonUpdateUI();
+    return true;
 }
 
-static void packetMonStart() {
-    packetMonResetCounters();
+static bool packetMonStart() {
+    if (!scanSessionIsResume()) packetMonResetCounters();
 
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
@@ -9399,8 +9655,9 @@ static void packetMonStart() {
     packetMonitorLastHopMs = millis();
 
     startLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b, 120);
-    if (packetMonStartLbl) lv_label_set_text(packetMonStartLbl, LV_SYMBOL_STOP "  Stop");
+    scanSessionPhase("packets");
     packetMonUpdateUI();
+    return true;
 }
 
 static void cb_packetMonStartStop(lv_event_t *e) {
@@ -9430,8 +9687,8 @@ static void cb_packetMonChPlus(lv_event_t *e) {
 
 static lv_obj_t *createSmallPacketBtn(lv_obj_t *parent, const char *text, int x, lv_event_cb_t cb) {
     lv_obj_t *btn = lv_btn_create(parent);
-    lv_obj_set_size(btn, 50, 26);
-    lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, x, -4);
+    lv_obj_set_size(btn, 50, 20);
+    lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, x, -34);
     lv_obj_set_style_bg_color(btn, TC(actionBg),  LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(btn, TC(actionFoc), LV_PART_MAIN | LV_STATE_FOCUSED);
     lv_obj_set_style_bg_color(btn, TC(success),   LV_PART_MAIN | LV_STATE_PRESSED);
@@ -9476,7 +9733,7 @@ void createPacketMonitor() {
     lv_obj_set_pos(packetMonStatsLbl, 8, 46);
 
     packetMonGraphArea = lv_obj_create(wifiToolScreen);
-    lv_obj_set_size(packetMonGraphArea, SCREEN_W - 12, 66);
+    lv_obj_set_size(packetMonGraphArea, SCREEN_W - 12, 46);
     lv_obj_set_pos(packetMonGraphArea, 6, 66);
     lv_obj_set_style_bg_color(packetMonGraphArea, lv_color_hex(TH.bg), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(packetMonGraphArea, LV_OPA_COVER, LV_PART_MAIN);
@@ -9492,8 +9749,8 @@ void createPacketMonitor() {
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t *backBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
-    lv_obj_t *chMinus = createSmallPacketBtn(wifiToolScreen, "CH-", 112, cb_packetMonChMinus);
-    lv_obj_t *chPlus  = createSmallPacketBtn(wifiToolScreen, "CH+", 166, cb_packetMonChPlus);
+    lv_obj_t *chMinus = createSmallPacketBtn(wifiToolScreen, "CH-", 208, cb_packetMonChMinus);
+    lv_obj_t *chPlus  = createSmallPacketBtn(wifiToolScreen, "CH+", 264, cb_packetMonChPlus);
 
     packetMonStartBtn = lv_btn_create(wifiToolScreen);
     lv_obj_set_size(packetMonStartBtn, 96, 26);
@@ -9504,7 +9761,7 @@ void createPacketMonitor() {
     lv_obj_set_style_border_color(packetMonStartBtn, TC(actionBdr), LV_PART_MAIN);
     lv_obj_set_style_border_width(packetMonStartBtn, 1, LV_PART_MAIN);
     lv_obj_set_style_radius(packetMonStartBtn, 5, LV_PART_MAIN);
-    lv_obj_add_event_cb(packetMonStartBtn, cb_packetMonStartStop, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(packetMonStartBtn, [](lv_event_t *) {}, LV_EVENT_CLICKED, nullptr);
     packetMonStartLbl = lv_label_create(packetMonStartBtn);
     lv_label_set_text(packetMonStartLbl, LV_SYMBOL_PLAY "  Start");
     lv_obj_set_style_text_color(packetMonStartLbl, TC(text), LV_PART_MAIN);
@@ -9518,16 +9775,11 @@ void createPacketMonitor() {
     lv_group_add_obj(wifiToolGroup, packetMonStartBtn);
     setGroup(wifiToolGroup);
 
-    if (packetMonitorTimer) { lv_timer_delete(packetMonitorTimer); packetMonitorTimer = nullptr; }
-    if (stationScanTimer) { lv_timer_delete(stationScanTimer); stationScanTimer = nullptr; }
-    stationStatusLbl = nullptr;
-    stationList = nullptr;
-    stationStartBtn = nullptr;
-    stationStartLbl = nullptr;
-    stationBackBtn = nullptr;
-    packetMonitorTimer = lv_timer_create(packetMonTimerCb, PACKET_MONITOR_UPDATE_MS, nullptr);
-
     packetMonUpdateUI();
+    attachScanSession(wifiToolScreen, &wifiToolGroup, backBtn, packetMonStartBtn,
+                      packetMonStatusLbl, "scanPacket", (uint32_t)wifiScanSeconds * 1000UL,
+                      {packetMonStart, packetMonPoll, packetMonStop,
+                       []() -> int { return packetMonTotalPackets > 0x7FFFFFFFUL ? 0x7FFFFFFF : (int)packetMonTotalPackets; }}, true);
     setAllLEDs(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b, LED_BRIGHTNESS);
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -9749,17 +10001,25 @@ static void wifiMapperTimerCb(lv_timer_t *t) {
     wifiMapperUpdateUI();
 }
 
-static void wifiMapperStop() {
-    if (!wifiMapperActive) return;
+static void wifiMapperPoll() {
+    static uint32_t lastMs = 0;
+    if (millis() - lastMs < 500) return;
+    lastMs = millis();
+    wifiMapperUpdateUI();
+}
+
+static bool wifiMapperStop() {
+    if (!wifiMapperActive) return true;
     wifiMapperActive = false;
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(nullptr);
     stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
-    if (wifiMapperPauseLbl) lv_label_set_text(wifiMapperPauseLbl, "Resume");
     wifiMapperUpdateUI();
+    return true;
 }
 
-static void wifiMapperStart() {
+static bool wifiMapperStart() {
+    if (!scanSessionIsResume()) wifiMapperResetPoints();
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     delay(50);
@@ -9778,8 +10038,9 @@ static void wifiMapperStart() {
     wifiMapperLastHopMs = millis();
 
     startLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b, 140);
-    if (wifiMapperPauseLbl) lv_label_set_text(wifiMapperPauseLbl, "Pause");
+    scanSessionPhase("map points");
     wifiMapperUpdateUI();
+    return true;
 }
 
 static void cb_wifiMapperPauseResume(lv_event_t *e) {
@@ -9847,7 +10108,7 @@ void createWiFiMapper() {
     lv_obj_set_pos(wifiMapperStatusLbl, 8, 27);
 
     wifiMapperGridArea = lv_obj_create(wifiToolScreen);
-    lv_obj_set_size(wifiMapperGridArea, SCREEN_W - 12, 82);
+    lv_obj_set_size(wifiMapperGridArea, SCREEN_W - 12, 62);
     lv_obj_set_pos(wifiMapperGridArea, 6, 42);
     lv_obj_set_style_bg_color(wifiMapperGridArea, lv_color_hex(TH.bg), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(wifiMapperGridArea, LV_OPA_COVER, LV_PART_MAIN);
@@ -9862,15 +10123,17 @@ void createWiFiMapper() {
     lv_obj_set_style_text_color(wifiMapperDetailLbl, lv_color_hex(TH.text), LV_PART_MAIN);
     lv_label_set_long_mode(wifiMapperDetailLbl, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(wifiMapperDetailLbl, SCREEN_W - 16);
-    lv_obj_set_pos(wifiMapperDetailLbl, 8, 126);
+    lv_obj_set_pos(wifiMapperDetailLbl, 8, 106);
 
     // Single compact control bar: no overlap with Back button.
-    wifiMapperPauseBtn = createMapperBtn(wifiToolScreen, "Pause", 6, 58, cb_wifiMapperPauseResume);
+    wifiMapperPauseBtn = createMapperBtn(wifiToolScreen, "Start", 6, 58, [](lv_event_t *) {});
     wifiMapperPauseLbl = lv_obj_get_child(wifiMapperPauseBtn, 0);
     lv_obj_t *clearBtn = createMapperBtn(wifiToolScreen, "Clear", 68, 54, cb_wifiMapperClear);
+    lv_obj_align(clearBtn, LV_ALIGN_BOTTOM_LEFT, 194, -28);
 
     wifiMapperSpeedBtn = createMapperBtn(wifiToolScreen, "Speed:Normal", 126, 104, cb_wifiMapperSpeed);
     wifiMapperSpeedLbl = lv_obj_get_child(wifiMapperSpeedBtn, 0);
+    lv_obj_align(wifiMapperSpeedBtn, LV_ALIGN_BOTTOM_LEFT, 6, -28);
 
     lv_obj_t *backBtn = createMapperBtn(wifiToolScreen, "Back", 234, 80, cb_wifiToolBack);
     lv_obj_add_flag(backBtn, LV_OBJ_FLAG_USER_1);
@@ -9883,13 +10146,11 @@ void createWiFiMapper() {
     lv_group_add_obj(wifiToolGroup, backBtn);
     setGroup(wifiToolGroup);
 
-    if (packetMonitorTimer) { lv_timer_delete(packetMonitorTimer); packetMonitorTimer = nullptr; }
-    if (stationScanTimer) { lv_timer_delete(stationScanTimer); stationScanTimer = nullptr; }
-    if (wifiMapperTimer) { lv_timer_delete(wifiMapperTimer); wifiMapperTimer = nullptr; }
-    wifiMapperTimer = lv_timer_create(wifiMapperTimerCb, 500, nullptr);
-
     wifiMapperDrawGrid();
-    wifiMapperStart();
+    attachScanSession(wifiToolScreen, &wifiToolGroup, backBtn, wifiMapperPauseBtn,
+                      wifiMapperStatusLbl, "scanMapper", (uint32_t)wifiScanSeconds * 1000UL,
+                      {wifiMapperStart, wifiMapperPoll, wifiMapperStop,
+                       []() -> int { return wifiMapperCount; }}, true);
 
     setAllLEDs(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b, LED_BRIGHTNESS);
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -9924,6 +10185,14 @@ static lv_obj_t *pineapList      = nullptr;
 static lv_obj_t *pineapBackBtn   = nullptr;   // saved so rebuildPineAPList can rebuild the group
 static lv_obj_t *pineapScanBtn   = nullptr;
 
+static int pineapFocusedIndex() {
+    if (!pineapList || !wifiToolGroup) return -1;
+    lv_obj_t *focused = lv_group_get_focused(wifiToolGroup);
+    for (int i = 0; i < pineapEntryCount; ++i)
+        if (lv_obj_get_child(pineapList, i) == focused) return i;
+    return -1;
+}
+
 // Sort pineapEntries by ssidCount descending
 static void sortPineAPBySsidCount() {
     for (int i = 0; i < pineapEntryCount - 1; i++)
@@ -9936,13 +10205,7 @@ static void sortPineAPBySsidCount() {
 }
 
 // Accumulate one WiFi scan into the BSSID table
-static void doPineAPScan() {
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-
-    int n = WiFi.scanNetworks(false, true);
-    if (n < 0) n = 0;
+static void accumulatePineAPScan(int n) {
     pineapScanCount++;
 
     for (int i = 0; i < n; i++) {
@@ -9950,6 +10213,7 @@ static void doPineAPScan() {
         String ssidStr  = WiFi.SSID(i);
         if (ssidStr.length() == 0) ssidStr = "<hidden>";
         int8_t rssi = (int8_t)WiFi.RSSI(i);
+        scanShouldAlert(bssidStr.c_str());
 
         // Find or create BSSID slot
         int slot = -1;
@@ -9959,13 +10223,22 @@ static void doPineAPScan() {
             }
         }
         if (slot == -1) {
-            if (pineapEntryCount >= MAX_PINEAP_BSSIDS) continue;
-            slot = pineapEntryCount++;
+            if (pineapEntryCount >= MAX_PINEAP_BSSIDS) {
+                const int focused = pineapFocusedIndex();
+                slot = -1;
+                for (int j = 0; j < pineapEntryCount; ++j) {
+                    if (j == focused) continue;
+                    if (slot < 0 || pineapEntries[j].lastSeen < pineapEntries[slot].lastSeen) slot = j;
+                }
+                if (slot < 0) continue;
+                memset(&pineapEntries[slot], 0, sizeof(pineapEntries[slot]));
+            } else slot = pineapEntryCount++;
             strncpy(pineapEntries[slot].bssid, bssidStr.c_str(), 17);
             pineapEntries[slot].bssid[17] = '\0';
             pineapEntries[slot].ssidCount = 0;
         }
         pineapEntries[slot].lastRSSI = rssi;
+        pineapEntries[slot].lastSeen = millis();
 
         // Check if this SSID is already stored for this BSSID
         int   checkLen = min(pineapEntries[slot].ssidCount, PINEAP_SSID_SLOTS);
@@ -9982,8 +10255,6 @@ static void doPineAPScan() {
             pineapEntries[slot].ssidCount++;
         }
     }
-    WiFi.scanDelete();
-
     // Re-count flagged BSSIDs and sort
     pineapFlagged = 0;
     for (int j = 0; j < pineapEntryCount; j++)
@@ -10006,7 +10277,7 @@ static void rebuildPineAPList() {
     lv_obj_clean(pineapList);
 
     if (pineapEntryCount == 0) {
-        lv_obj_t *e = lv_list_add_text(pineapList, "No BSSIDs seen yet — press Scan");
+        lv_obj_t *e = lv_list_add_text(pineapList, "No BSSIDs seen yet.");
         if (e) lv_obj_set_style_text_color(e, lv_color_hex(TH.textDim), LV_PART_MAIN);
         return;
     }
@@ -10030,42 +10301,35 @@ static void rebuildPineAPList() {
         lv_obj_set_style_text_color(btn, col, LV_PART_MAIN | LV_STATE_DEFAULT);
 
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createPineAPDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createPineAPDetail,
+                                  (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(wifiToolGroup, btn);
     }
+    scanRestoreControls();
 }
 
-// Scan button callback
-static void cb_doPineAPScan(lv_event_t *e) {
-    char buf[60];
-    snprintf(buf, sizeof(buf),
-             LV_SYMBOL_REFRESH "  Scanning...  (pass %d)", pineapScanCount + 1);
-    lv_label_set_text(pineapStatusLbl, buf);
-    lv_obj_set_style_text_color(pineapStatusLbl, lv_color_hex(TH.warn), LV_PART_MAIN);
-    lv_timer_handler();
-
-    // Amber spinner — distinct from generic green WiFi scans
-    startLEDSpinner(220, 140, 0);
-    doPineAPScan();
-    stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
-
-    if (pineapFlagged > 0) {
-        snprintf(buf, sizeof(buf),
-                 LV_SYMBOL_WARNING "  %d suspect AP%s!  (%d scans)",
-                 pineapFlagged, pineapFlagged == 1 ? "" : "s", pineapScanCount);
-        lv_obj_set_style_text_color(pineapStatusLbl, lv_color_hex(TH.alert), LV_PART_MAIN);
-    } else {
-        snprintf(buf, sizeof(buf),
-                 LV_SYMBOL_WIFI "  %d BSSID%s tracked  (%d scans)",
-                 pineapEntryCount, pineapEntryCount == 1 ? "" : "s", pineapScanCount);
-        lv_obj_set_style_text_color(pineapStatusLbl,
-            pineapEntryCount > 0 ? lv_color_hex(TH.success) : lv_color_hex(TH.textDim),
-            LV_PART_MAIN);
+static bool pineapScanStart() {
+    if (!scanSessionIsResume()) {
+        memset(pineapEntries, 0, sizeof(pineapEntries));
+        pineapEntryCount = pineapScanCount = pineapFlagged = 0;
+        rebuildPineAPList();
     }
-    lv_label_set_text(pineapStatusLbl, buf);
-    rebuildPineAPList();
+    scanSessionPhase("BSSIDs");
+    return liveWifiScanStartCycle();
 }
+
+static void pineapScanPoll() {
+    const int n = liveWifiScanResult();
+    if (n == WIFI_SCAN_RUNNING) return;
+    accumulatePineAPScan(n);
+    WiFi.scanDelete();
+    rebuildPineAPList();
+    if (!liveWifiScanStartCycle()) scanSessionError("PineAP scan restart failed");
+}
+
+static bool pineapScanStop() { return liveWifiScanStop(); }
+static int pineapScanResultCount() { return pineapEntryCount; }
 
 // Main PineAP Hunter screen
 void createPineAPHunter() {
@@ -10102,14 +10366,18 @@ void createPineAPHunter() {
 
     pineapBackBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
     pineapScanBtn = createActionBtn(wifiToolScreen,
-                                        LV_SYMBOL_REFRESH "  Scan",
-                                        cb_doPineAPScan);
+                                        LV_SYMBOL_PLAY "  Start",
+                                        [](lv_event_t *) {});
 
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
     lv_group_add_obj(wifiToolGroup, pineapBackBtn);
     lv_group_add_obj(wifiToolGroup, pineapScanBtn);
     setGroup(wifiToolGroup);
+
+    attachScanSession(wifiToolScreen, &wifiToolGroup, pineapBackBtn, pineapScanBtn,
+                      pineapStatusLbl, "scanPine", (uint32_t)wifiScanSeconds * 1000UL,
+                      {pineapScanStart, pineapScanPoll, pineapScanStop, pineapScanResultCount});
 
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -11002,6 +11270,367 @@ static void parseNyanBoxManufacturer(BLEAdvertisedDevice &dev, uint16_t &level, 
     }
 }
 
+static BLEDeviceType classifyBleAdvertisement(BLEAdvertisedDevice &dev) {
+    if (detectFlipper(dev)) return BLE_FLIPPER;
+    if (detectNyanBox(dev)) return BLE_NYANBOX;
+    if (detectAxon(dev)) return BLE_AXON;
+    if (detectTeslaName(dev)) return BLE_TESLA;
+    if (detectAirTag(dev)) return BLE_AIRTAG;
+    if (detectApple(dev)) return BLE_APPLE;
+    if (detectMeta(dev)) return BLE_META;
+    if (dev.haveName()) {
+        String name = dev.getName().c_str();
+        name.trim();
+        for (int i = 0; i < SKIMMER_NAME_MATCH_COUNT; ++i) {
+            if (name.equalsIgnoreCase(SKIMMER_NAME_MATCHES[i])) return BLE_SKIMMER;
+        }
+    }
+    return BLE_GENERIC;
+}
+
+static bool liveBleModeMatches(LiveBleMode mode, BLEDeviceType type,
+                               BLEAdvertisedDevice &dev) {
+    switch (mode) {
+        case LiveBleMode::Generic: return true;
+        case LiveBleMode::AirTag:  return type == BLE_AIRTAG;
+        case LiveBleMode::Flipper: return type == BLE_FLIPPER;
+        case LiveBleMode::NyanBox: return type == BLE_NYANBOX;
+        case LiveBleMode::Axon:    return type == BLE_AXON;
+        case LiveBleMode::Raven:   return detectRaven(dev);
+        case LiveBleMode::Charger: {
+            char method[24];
+            char uuid[41];
+            uint8_t confidence = 0;
+            return detectSmartCharger(dev, method, sizeof(method), uuid, sizeof(uuid), &confidence);
+        }
+        case LiveBleMode::Tesla:   return type == BLE_TESLA;
+        case LiveBleMode::Skimmer: return type == BLE_SKIMMER;
+        case LiveBleMode::Meta:    return type == BLE_META;
+    }
+    return false;
+}
+
+static void liveBleMailboxPush(const LiveBleObservation &observation) {
+    portENTER_CRITICAL(&liveBleMailboxMux);
+
+    // Duplicate advertisements are common. Replace a pending observation for
+    // the same tool/MAC instead of allowing one beacon to fill the queue.
+    for (uint8_t offset = 0; offset < liveBleMailboxCount; ++offset) {
+        const uint8_t index = (liveBleMailboxHead + offset) % LIVE_BLE_MAILBOX_CAPACITY;
+        if (liveBleMailbox[index].mode == observation.mode &&
+            strcmp(liveBleMailbox[index].mac, observation.mac) == 0) {
+            liveBleMailbox[index] = observation;
+            portEXIT_CRITICAL(&liveBleMailboxMux);
+            return;
+        }
+    }
+
+    if (liveBleMailboxCount >= LIVE_BLE_MAILBOX_CAPACITY) {
+        ++liveBleMailboxDrops;
+        portEXIT_CRITICAL(&liveBleMailboxMux);
+        return;
+    }
+
+    const uint8_t tail = (liveBleMailboxHead + liveBleMailboxCount) % LIVE_BLE_MAILBOX_CAPACITY;
+    liveBleMailbox[tail] = observation;
+    ++liveBleMailboxCount;
+    portEXIT_CRITICAL(&liveBleMailboxMux);
+}
+
+static bool liveBleMailboxPop(LiveBleObservation &observation) {
+    portENTER_CRITICAL(&liveBleMailboxMux);
+    if (liveBleMailboxCount == 0) {
+        portEXIT_CRITICAL(&liveBleMailboxMux);
+        return false;
+    }
+    observation = liveBleMailbox[liveBleMailboxHead];
+    liveBleMailboxHead = (liveBleMailboxHead + 1) % LIVE_BLE_MAILBOX_CAPACITY;
+    --liveBleMailboxCount;
+    portEXIT_CRITICAL(&liveBleMailboxMux);
+    return true;
+}
+
+static void liveBleAdvertisement(BLEAdvertisedDevice &dev, void *context) {
+    LiveBleMode mode = *static_cast<LiveBleMode *>(context);
+    const BLEDeviceType type = classifyBleAdvertisement(dev);
+    if (!liveBleModeMatches(mode, type, dev)) return;
+
+    LiveBleObservation observation{};
+    observation.mode = mode;
+    observation.type = type;
+    observation.rssi = static_cast<int8_t>(dev.getRSSI());
+    observation.seenMs = millis();
+
+    String mac = dev.getAddress().toString().c_str();
+    strncpy(observation.mac, mac.c_str(), sizeof(observation.mac) - 1);
+    const char *fallback = "<unknown>";
+    if (mode == LiveBleMode::NyanBox) fallback = "Unknown";
+    else if (mode == LiveBleMode::Axon) fallback = "Axon Device";
+    else if (mode == LiveBleMode::Raven) fallback = "Raven Device";
+    else if (mode == LiveBleMode::Charger) fallback = "Smart Charger";
+    else if (mode == LiveBleMode::Tesla) fallback = "Tesla BLE";
+    String name = dev.haveName() ? dev.getName().c_str() : fallback;
+    observation.hasName = dev.haveName();
+    observation.hasManufacturer = dev.haveManufacturerData();
+    strncpy(observation.name, name.c_str(), sizeof(observation.name) - 1);
+
+    if (type == BLE_FLIPPER) {
+        strncpy(observation.flipperColor, detectFlipperColor(dev),
+                sizeof(observation.flipperColor) - 1);
+    }
+    if (mode == LiveBleMode::NyanBox) {
+        parseNyanBoxManufacturer(dev, observation.nyanLevel,
+                                 observation.nyanVersion,
+                                 sizeof(observation.nyanVersion));
+    } else if (mode == LiveBleMode::Raven) {
+        observation.ravenUuidHits = ravenCountUuidHits(
+            dev, observation.ravenUuid, sizeof(observation.ravenUuid));
+        strncpy(observation.ravenFw, estimateRavenFW(dev),
+                sizeof(observation.ravenFw) - 1);
+    } else if (mode == LiveBleMode::Charger) {
+        detectSmartCharger(dev,
+                           observation.chargerMethod, sizeof(observation.chargerMethod),
+                           observation.chargerUuid, sizeof(observation.chargerUuid),
+                           &observation.chargerConfidence);
+        chargerManufacturerPreview(dev, observation.chargerMfg,
+                                   sizeof(observation.chargerMfg));
+    }
+
+    liveBleMailboxPush(observation);
+}
+
+static int oldestLiveBleIndex(const uint32_t *seen, int count) {
+    int oldest = -1;
+    for (int i = 0; i < count; ++i) {
+        if (i == liveBleProtectedIndex) continue;
+        if (oldest < 0 || static_cast<int32_t>(seen[i] - seen[oldest]) < 0) oldest = i;
+    }
+    return oldest;
+}
+
+static void resetLiveBleResults(LiveBleMode mode) {
+    switch (mode) {
+        case LiveBleMode::Generic:
+        case LiveBleMode::AirTag:
+        case LiveBleMode::Flipper:
+        case LiveBleMode::Skimmer:
+        case LiveBleMode::Meta:
+            bleEntryCount = 0;
+            memset(bleEntries, 0, sizeof(bleEntries));
+            memset(liveBleEntryLastSeen, 0, sizeof(liveBleEntryLastSeen));
+            break;
+        case LiveBleMode::NyanBox:
+            nyanEntryCount = 0; memset(nyanEntries, 0, sizeof(nyanEntries)); break;
+        case LiveBleMode::Axon:
+            axonEntryCount = 0; memset(axonEntries, 0, sizeof(axonEntries)); break;
+        case LiveBleMode::Raven:
+            ravenEntryCount = 0; memset(ravenEntries, 0, sizeof(ravenEntries)); break;
+        case LiveBleMode::Charger:
+            chargerEntryCount = 0; memset(chargerEntries, 0, sizeof(chargerEntries)); break;
+        case LiveBleMode::Tesla:
+            teslaEntryCount = 0; memset(teslaEntries, 0, sizeof(teslaEntries)); break;
+    }
+}
+
+static bool applyLiveBleObservation(const LiveBleObservation &o) {
+    if (o.mode == LiveBleMode::Generic || o.mode == LiveBleMode::AirTag ||
+        o.mode == LiveBleMode::Flipper || o.mode == LiveBleMode::Skimmer ||
+        o.mode == LiveBleMode::Meta) {
+        int idx = -1;
+        for (int i = 0; i < bleEntryCount; ++i) {
+            if (strcmp(bleEntries[i].mac, o.mac) == 0) { idx = i; break; }
+        }
+        const bool added = idx < 0;
+        if (idx < 0) {
+            if (bleEntryCount < MAX_BLE_RESULTS) idx = bleEntryCount++;
+            else idx = oldestLiveBleIndex(liveBleEntryLastSeen, bleEntryCount);
+        }
+        if (idx < 0) return false;
+        BLEEntry &entry = bleEntries[idx];
+        if (added) memset(&entry, 0, sizeof(entry));
+        if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1);
+        strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1);
+        entry.rssi = o.rssi;
+        entry.type = o.type;
+        entry.lastSeen = o.seenMs;
+        strncpy(entry.mfgHint, mfgHintStr(o.type), sizeof(entry.mfgHint) - 1);
+        strncpy(entry.flipperColor, o.flipperColor, sizeof(entry.flipperColor) - 1);
+        liveBleEntryLastSeen[idx] = o.seenMs;
+        return added;
+    }
+
+    if (o.mode == LiveBleMode::NyanBox) {
+        int idx = -1;
+        for (int i = 0; i < nyanEntryCount; ++i)
+            if (strcmp(nyanEntries[i].mac, o.mac) == 0) { idx = i; break; }
+        const bool added = idx < 0;
+        if (idx < 0) {
+            if (nyanEntryCount < MAX_NYANBOX_RESULTS) idx = nyanEntryCount++;
+            else {
+                idx = liveBleProtectedIndex == 0 ? 1 : 0;
+                if (idx >= nyanEntryCount) return false;
+                for (int i = 1; i < nyanEntryCount; ++i)
+                    if (i != liveBleProtectedIndex &&
+                        (idx == liveBleProtectedIndex || (int32_t)(nyanEntries[i].lastSeen - nyanEntries[idx].lastSeen) < 0)) idx = i;
+            }
+        }
+        NyanBoxEntry &entry = nyanEntries[idx];
+        if (added) memset(&entry, 0, sizeof(entry));
+        if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1);
+        strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1);
+        entry.rssi = o.rssi; entry.lastSeen = o.seenMs;
+        if (added || o.hasManufacturer) {
+            entry.level = o.nyanLevel;
+            strncpy(entry.version, o.nyanVersion, sizeof(entry.version) - 1);
+        }
+        return added;
+    }
+
+    if (o.mode == LiveBleMode::Axon) {
+        int idx = -1;
+        for (int i = 0; i < axonEntryCount; ++i)
+            if (strcmp(axonEntries[i].mac, o.mac) == 0) { idx = i; break; }
+        const bool added = idx < 0;
+        if (idx < 0) {
+            if (axonEntryCount < MAX_AXON_RESULTS) idx = axonEntryCount++;
+            else {
+                idx = liveBleProtectedIndex == 0 ? 1 : 0;
+                if (idx >= axonEntryCount) return false;
+                for (int i = 1; i < axonEntryCount; ++i)
+                    if (i != liveBleProtectedIndex &&
+                        (idx == liveBleProtectedIndex || (int32_t)(axonEntries[i].lastSeen - axonEntries[idx].lastSeen) < 0)) idx = i;
+            }
+        }
+        AxonEntry &entry = axonEntries[idx];
+        if (added) memset(&entry, 0, sizeof(entry));
+        if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1);
+        strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1);
+        entry.rssi = o.rssi; entry.lastSeen = o.seenMs;
+        return added;
+    }
+
+#define LIVE_BLE_UPSERT_SPECIAL(ARRAY, COUNT, MAX_COUNT, TYPE) \
+    int idx = -1; \
+    for (int i = 0; i < COUNT; ++i) \
+        if (strcmp(ARRAY[i].mac, o.mac) == 0) { idx = i; break; } \
+    const bool added = idx < 0; \
+    if (idx < 0) { \
+        if (COUNT < MAX_COUNT) idx = COUNT++; \
+        else { \
+            idx = liveBleProtectedIndex == 0 ? 1 : 0; \
+            if (idx >= COUNT) return false; \
+            for (int i = 1; i < COUNT; ++i) \
+                if (i != liveBleProtectedIndex && \
+                    (idx == liveBleProtectedIndex || (int32_t)(ARRAY[i].lastSeen - ARRAY[idx].lastSeen) < 0)) idx = i; \
+        } \
+    } \
+    TYPE &entry = ARRAY[idx]; \
+    if (added) memset(&entry, 0, sizeof(entry)); \
+    if (added || o.hasName) strncpy(entry.name, o.name, sizeof(entry.name) - 1); \
+    strncpy(entry.mac, o.mac, sizeof(entry.mac) - 1); \
+    entry.rssi = o.rssi; entry.lastSeen = o.seenMs
+
+    if (o.mode == LiveBleMode::Raven) {
+        LIVE_BLE_UPSERT_SPECIAL(ravenEntries, ravenEntryCount, MAX_RAVEN_RESULTS, RavenEntry);
+        strncpy(entry.matchedUuid, o.ravenUuid[0] ? o.ravenUuid : "unknown",
+                sizeof(entry.matchedUuid) - 1);
+        strncpy(entry.fwEstimate, o.ravenFw, sizeof(entry.fwEstimate) - 1);
+        entry.uuidHitCount = o.ravenUuidHits;
+        return added;
+    }
+    if (o.mode == LiveBleMode::Charger) {
+        LIVE_BLE_UPSERT_SPECIAL(chargerEntries, chargerEntryCount, MAX_CHARGER_RESULTS, SmartChargerEntry);
+        strncpy(entry.matchMethod, o.chargerMethod[0] ? o.chargerMethod : "Unknown",
+                sizeof(entry.matchMethod) - 1);
+        if (added || o.chargerUuid[0]) {
+            strncpy(entry.advUuid, o.chargerUuid[0] ? o.chargerUuid : "not advertised",
+                    sizeof(entry.advUuid) - 1);
+        }
+        if (added || o.hasManufacturer)
+            strncpy(entry.mfgPreview, o.chargerMfg, sizeof(entry.mfgPreview) - 1);
+        if (o.chargerConfidence > entry.confidence) entry.confidence = o.chargerConfidence;
+        return added;
+    }
+    if (o.mode == LiveBleMode::Tesla) {
+        LIVE_BLE_UPSERT_SPECIAL(teslaEntries, teslaEntryCount, MAX_TESLA_RESULTS, TeslaEntry);
+        return added;
+    }
+#undef LIVE_BLE_UPSERT_SPECIAL
+    return false;
+}
+
+static bool startLiveBleScan(LiveBleMode mode) {
+    ensureBLEInit();
+    if (!scanSessionIsResume()) resetLiveBleResults(mode);
+    liveBleMode = mode;
+    liveBleResultsDirty = true;
+    liveBleNewAlert = false;
+    liveBleLastUiRefreshMs = 0;
+    portENTER_CRITICAL(&liveBleMailboxMux);
+    liveBleMailboxHead = 0;
+    liveBleMailboxCount = 0;
+    liveBleMailboxDrops = 0;
+    portEXIT_CRITICAL(&liveBleMailboxMux);
+
+    // Preserve the old detector behavior: BLE scanning owns the 2.4 GHz
+    // radio and intentionally disconnects Wi-Fi once when a session starts.
+    WiFi.disconnect();
+    scanSessionPhase("starting BLE");
+    if (!liveBleRadio.begin(liveBleAdvertisement, &liveBleMode)) {
+        scanSessionError(liveBleRadio.status());
+        return false;
+    }
+    scanSessionPhase("listening");
+    return true;
+}
+
+static void pollLiveBleScan() {
+    liveBleRadio.poll();
+    if (!liveBleRadio.running()) {
+        scanSessionError(liveBleRadio.completed() ? "BLE scan ended" : liveBleRadio.status());
+        return;
+    }
+
+    LiveBleObservation observation;
+    while (liveBleMailboxPop(observation)) {
+        const bool added = applyLiveBleObservation(observation);
+        liveBleResultsDirty = liveBleResultsDirty || added;
+
+        char alertKey[32];
+        snprintf(alertKey, sizeof(alertKey), "ble:%u:%s",
+                 static_cast<unsigned>(observation.mode), observation.mac);
+        if (scanShouldAlert(alertKey)) {
+            const bool alertingMode =
+                observation.mode == LiveBleMode::Flipper ||
+                observation.mode == LiveBleMode::Raven ||
+                observation.mode == LiveBleMode::Charger ||
+                observation.mode == LiveBleMode::Tesla ||
+                observation.mode == LiveBleMode::Skimmer ||
+                (observation.mode == LiveBleMode::Generic && observation.type == BLE_SKIMMER);
+            liveBleNewAlert = liveBleNewAlert || alertingMode;
+        }
+    }
+    if (liveBleMailboxDrops) scanSessionPhase("listening; drops");
+}
+
+static bool stopLiveBleScan() {
+    liveBleRadio.poll();
+    const bool stopped = liveBleRadio.stop();
+    if (!stopped && liveBleRadio.stopFailed()) scanSessionError(liveBleRadio.status());
+    return stopped;
+}
+
+static int liveBleResultCount() {
+    switch (liveBleMode) {
+        case LiveBleMode::NyanBox: return nyanEntryCount;
+        case LiveBleMode::Axon: return axonEntryCount;
+        case LiveBleMode::Raven: return ravenEntryCount;
+        case LiveBleMode::Charger: return chargerEntryCount;
+        case LiveBleMode::Tesla: return teslaEntryCount;
+        default: return bleEntryCount;
+    }
+}
+
 static int findNyanBoxByMac(const char *mac) {
     for (int i = 0; i < nyanEntryCount; i++) {
         if (strcmp(nyanEntries[i].mac, mac) == 0) return i;
@@ -11243,6 +11872,7 @@ static int doBLEScan(int durationSec, BLEDeviceType filterType) {
         bleEntries[bleEntryCount].mac[17] = '\0';
 
         bleEntries[bleEntryCount].rssi = (int8_t)dev.getRSSI();
+        bleEntries[bleEntryCount].lastSeen = millis();
         bleEntries[bleEntryCount].type = dtype;
         strncpy(bleEntries[bleEntryCount].mfgHint,
                 mfgHintStr(dtype), 13);
@@ -11283,6 +11913,7 @@ static int doBLEScan(int durationSec, BLEDeviceType filterType) {
 static lv_obj_t *pwnStatusLbl = nullptr;
 static lv_obj_t *pwnList      = nullptr;
 static lv_obj_t *pwnBackBtn   = nullptr;
+static lv_obj_t *pwnStartBtn  = nullptr;
 
 // ISR-safe: just verify the MAC and copy the raw SSID/BSSID into
 // the pending slot. The refresh timer does the JSON parsing.
@@ -11374,6 +12005,15 @@ static const char *pwnDeviceType(const PwnEntry &e) {
     return "Pwnagotchi";
 }
 
+static int pwnFocusedIndex() {
+    if (!pwnList || !wifiToolGroup) return -1;
+    lv_obj_t *focused = lv_group_get_focused(wifiToolGroup);
+    for (int i = 0; i < pwnCount; ++i) {
+        if (lv_obj_get_child(pwnList, i) == focused) return i;
+    }
+    return -1;
+}
+
 // Parse a pending SSID JSON blob and update pwnEntries[].
 // Called from the LVGL timer (main task) — safe to use strstr/atoi.
 static void processPwnPending() {
@@ -11397,6 +12037,7 @@ static void processPwnPending() {
 
     bool pal = pwnJsonBool(ssid, "pal");
     bool minigotchi = pwnJsonBool(ssid, "minigotchi");
+    const bool shouldAlert = scanShouldAlert(bssid);
 
     // Update existing entry by name, or add new one
     for (int i = 0; i < pwnCount; i++) {
@@ -11409,24 +12050,36 @@ static void processPwnPending() {
             strncpy(pwnEntries[i].rawJson, ssid, sizeof(pwnEntries[i].rawJson) - 1);
             pwnEntries[i].rawJson[sizeof(pwnEntries[i].rawJson) - 1] = '\0';
             pwnEntries[i].lastSeen   = millis();
+            if (shouldAlert) playPwnagotchiChirp();
             return;
         }
     }
-    if (pwnCount >= MAX_PWNS) return;
-    strncpy(pwnEntries[pwnCount].name,  name,  32);
-    strncpy(pwnEntries[pwnCount].bssid, bssid, 17);
-    pwnEntries[pwnCount].name[32]  = '\0';
-    pwnEntries[pwnCount].bssid[17] = '\0';
-    pwnEntries[pwnCount].pwnd_tot   = pwnd;
-    pwnEntries[pwnCount].pal        = pal;
-    pwnEntries[pwnCount].minigotchi = minigotchi;
-    pwnEntries[pwnCount].channel    = ch;
-    pwnEntries[pwnCount].rssi       = rssi;
-    strncpy(pwnEntries[pwnCount].rawJson, ssid, sizeof(pwnEntries[pwnCount].rawJson) - 1);
-    pwnEntries[pwnCount].rawJson[sizeof(pwnEntries[pwnCount].rawJson) - 1] = '\0';
-    pwnEntries[pwnCount].lastSeen   = millis();
-    pwnCount++;
-    playPwnagotchiChirp();
+    int slot = pwnCount;
+    if (pwnCount >= MAX_PWNS) {
+        const int focused = pwnFocusedIndex();
+        slot = -1;
+        for (int i = 0; i < pwnCount; ++i) {
+            if (i == focused) continue;
+            if (slot < 0 || pwnEntries[i].lastSeen < pwnEntries[slot].lastSeen) slot = i;
+        }
+        if (slot < 0) return;
+    } else {
+        ++pwnCount;
+    }
+    memset(&pwnEntries[slot], 0, sizeof(pwnEntries[slot]));
+    strncpy(pwnEntries[slot].name, name, 32);
+    strncpy(pwnEntries[slot].bssid, bssid, 17);
+    pwnEntries[slot].name[32] = '\0';
+    pwnEntries[slot].bssid[17] = '\0';
+    pwnEntries[slot].pwnd_tot = pwnd;
+    pwnEntries[slot].pal = pal;
+    pwnEntries[slot].minigotchi = minigotchi;
+    pwnEntries[slot].channel = ch;
+    pwnEntries[slot].rssi = rssi;
+    strncpy(pwnEntries[slot].rawJson, ssid, sizeof(pwnEntries[slot].rawJson) - 1);
+    pwnEntries[slot].rawJson[sizeof(pwnEntries[slot].rawJson) - 1] = '\0';
+    pwnEntries[slot].lastSeen = millis();
+    if (shouldAlert) playPwnagotchiChirp();
 }
 
 static void pwn_refresh_cb(lv_timer_t *) {
@@ -11458,13 +12111,15 @@ static void pwn_refresh_cb(lv_timer_t *) {
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
     if (pwnBackBtn) lv_group_add_obj(wifiToolGroup, pwnBackBtn);
+    if (pwnStartBtn) lv_group_add_obj(wifiToolGroup, pwnStartBtn);
 
     lv_obj_clean(pwnList);
     if (pwnCount == 0) {
         lv_obj_t *e = lv_list_add_text(pwnList,
-            "Hopping ch 1-13 — waiting for beacon...");
+            "No matching beacons yet.");
         if (e) lv_obj_set_style_text_color(e,
                     lv_color_hex(TH.textDim), LV_PART_MAIN);
+        scanRestoreControls();
         setGroup(wifiToolGroup);
         return;
     }
@@ -11484,12 +12139,45 @@ static void pwn_refresh_cb(lv_timer_t *) {
         lv_obj_set_style_text_color(btn, lv_color_hex(TH.alert),
                                     LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createPwnagotchiDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createPwnagotchiDetail,
+                                  (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(wifiToolGroup, btn);
     }
+    scanRestoreControls();
     setGroup(wifiToolGroup);
 }
+
+static bool pwnScanStart() {
+    if (!scanSessionIsResume()) {
+        pwnCount = 0; pwnPendingReady = false;
+        memset(pwnEntries, 0, sizeof(pwnEntries));
+    }
+    WiFi.mode(WIFI_STA); WiFi.disconnect();
+    esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(nullptr);
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous_rx_cb(pwn_sniffer_cb);
+    esp_wifi_set_promiscuous(true);
+    deauthChannel = 1; pwnActive = true;
+    scanSessionPhase("Pwnagotchi");
+    return true;
+}
+
+static bool pwnScanStop() {
+    pwnActive = false;
+    esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(nullptr);
+    stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
+    return true;
+}
+
+static void pwnScanPoll() {
+    static uint32_t lastMs = 0;
+    processPwnPending();
+    if (millis() - lastMs < 500) return;
+    lastMs = millis(); pwn_refresh_cb(nullptr);
+}
+
+static int pwnScanCount() { return pwnCount; }
 
 void createPwnagotchiDetail(int idx) {
     if (idx < 0 || idx >= pwnCount) return;
@@ -11574,6 +12262,7 @@ void createPwnagotchiDetector() {
     pwnStatusLbl    = nullptr;
     pwnList         = nullptr;
     pwnBackBtn      = nullptr;
+    pwnStartBtn     = nullptr;
     memset(pwnEntries, 0, sizeof(pwnEntries));
 
     if (wifiToolScreen) { lv_obj_delete(wifiToolScreen); wifiToolScreen = nullptr; }
@@ -11599,31 +12288,25 @@ void createPwnagotchiDetector() {
     lv_obj_set_style_pad_row(pwnList,      1, LV_PART_MAIN);
 
     lv_obj_t *initLbl =
-        lv_list_add_text(pwnList, "Hopping ch 1-13 — waiting for beacon...");
+        lv_list_add_text(pwnList, "No matching beacons yet.");
     if (initLbl)
         lv_obj_set_style_text_color(initLbl,
             lv_color_hex(TH.textDim), LV_PART_MAIN);
 
     pwnBackBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
+    pwnStartBtn = createActionBtn(wifiToolScreen, LV_SYMBOL_PLAY "  Start", [](lv_event_t *) {});
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
     lv_group_add_obj(wifiToolGroup, pwnBackBtn);
+    lv_group_add_obj(wifiToolGroup, pwnStartBtn);
     setGroup(wifiToolGroup);
 
     // Hot-pink LEDs to distinguish from deauth (green)
     setAllLEDs(220, 0, 150, LED_BRIGHTNESS);
 
-    // Start promiscuous sniffer on channel 1
-    pwnActive = true;
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    esp_wifi_set_promiscuous(true);
-    esp_wifi_set_promiscuous_rx_cb(pwn_sniffer_cb);
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    deauthChannel = 1;   // reuse hop counter
-
-    if (pwnTimer) { lv_timer_delete(pwnTimer); pwnTimer = nullptr; }
-    pwnTimer = lv_timer_create(pwn_refresh_cb, 2000, nullptr);
+    attachScanSession(wifiToolScreen, &wifiToolGroup, pwnBackBtn, pwnStartBtn,
+                      pwnStatusLbl, "scanPwn", (uint32_t)wifiScanSeconds * 1000UL,
+                      {pwnScanStart, pwnScanPoll, pwnScanStop, pwnScanCount}, true);
 
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -11640,6 +12323,8 @@ void createPwnagotchiDetector() {
 // ════════════════════════════════════════════════════════════════
 static lv_obj_t *flockStatusLbl = nullptr;
 static lv_obj_t *flockList      = nullptr;
+static lv_obj_t *flockBackBtn   = nullptr;
+static lv_obj_t *flockStartBtn  = nullptr;
 
 // Small IRAM-safe helpers for case-insensitive keyword matching.
 // Avoids strstr/strcasecmp inside the promiscuous sniffer callback.
@@ -11887,6 +12572,7 @@ static void flock_refresh_cb(lv_timer_t *) {
         memcpy(confidence, flockPendingConfidence, 8);
         memcpy(deviceType, flockPendingDeviceType, 20);
         flockPendingReady = false;
+        const bool shouldAlert = scanShouldAlert(src);
 
         // Deduplicate hits. MAC-based dedupe prevents repeated frames from
         // the same device from inflating the count, while still allowing
@@ -11908,25 +12594,28 @@ static void flock_refresh_cb(lv_timer_t *) {
                 flockHits[i].rssi = rssi;   // update RSSI
                 flockHits[i].count++;
                 flockHits[i].lastSeen = millis();
+                if (shouldAlert) playFlockChirp();
                 found = true;
                 break;
             }
         }
-        if (!found && flockHitCount < MAX_FLOCK_HITS) {
-            strncpy(flockHits[flockHitCount].ssid, ssid, 32);
-            flockHits[flockHitCount].ssid[32] = '\0';
-            strncpy(flockHits[flockHitCount].src, src, 17);
-            flockHits[flockHitCount].src[17] = '\0';
-            strncpy(flockHits[flockHitCount].method, method, sizeof(flockHits[flockHitCount].method) - 1);
-            strncpy(flockHits[flockHitCount].confidence, confidence, sizeof(flockHits[flockHitCount].confidence) - 1);
-            strncpy(flockHits[flockHitCount].type, deviceType, sizeof(flockHits[flockHitCount].type) - 1);
-            flockHits[flockHitCount].frameType = ft;
-            flockHits[flockHitCount].rssi      = rssi;
-            flockHits[flockHitCount].count     = 1;
-            flockHits[flockHitCount].firstSeen = millis();
-            flockHits[flockHitCount].lastSeen  = millis();
-            flockHitCount++;
-            playFlockChirp();
+        if (!found) {
+            int slot = flockHitCount;
+            if (flockHitCount >= MAX_FLOCK_HITS) {
+                slot = 0;
+                for (int i = 1; i < flockHitCount; ++i)
+                    if (flockHits[i].lastSeen < flockHits[slot].lastSeen) slot = i;
+            } else ++flockHitCount;
+            memset(&flockHits[slot], 0, sizeof(flockHits[slot]));
+            strncpy(flockHits[slot].ssid, ssid, 32);
+            strncpy(flockHits[slot].src, src, 17);
+            strncpy(flockHits[slot].method, method, sizeof(flockHits[slot].method) - 1);
+            strncpy(flockHits[slot].confidence, confidence, sizeof(flockHits[slot].confidence) - 1);
+            strncpy(flockHits[slot].type, deviceType, sizeof(flockHits[slot].type) - 1);
+            flockHits[slot].frameType = ft;
+            flockHits[slot].rssi = rssi; flockHits[slot].count = 1;
+            flockHits[slot].firstSeen = flockHits[slot].lastSeen = millis();
+            if (shouldAlert) playFlockChirp();
         }
     }
 
@@ -11950,7 +12639,7 @@ static void flock_refresh_cb(lv_timer_t *) {
     lv_obj_clean(flockList);
     if (flockHitCount == 0) {
         lv_obj_t *e = lv_list_add_text(flockList,
-            "Hopping ch 1-13 — watching beacons & probes...");
+            "No matching beacons or probes yet.");
         if (e) lv_obj_set_style_text_color(e,
                     lv_color_hex(TH.textDim), LV_PART_MAIN);
         return;
@@ -11983,6 +12672,36 @@ static void flock_refresh_cb(lv_timer_t *) {
     }
 }
 
+static bool flockScanStart() {
+    if (!scanSessionIsResume()) {
+        flockHitCount = 0; flockPendingReady = false;
+        memset(flockHits, 0, sizeof(flockHits));
+    }
+    WiFi.mode(WIFI_STA); WiFi.disconnect();
+    esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(nullptr);
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous_rx_cb(flock_sniffer_cb);
+    esp_wifi_set_promiscuous(true);
+    deauthChannel = 1; flockActive = true;
+    scanSessionPhase("Flock WiFi");
+    return true;
+}
+
+static bool flockScanStop() {
+    flockActive = false;
+    esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(nullptr);
+    stopLEDSpinner(MENU_COLORS[0].r, MENU_COLORS[0].g, MENU_COLORS[0].b);
+    return true;
+}
+
+static void flockScanPoll() {
+    static uint32_t lastMs = 0;
+    if (millis() - lastMs < 250) return;
+    lastMs = millis(); flock_refresh_cb(nullptr);
+}
+
+static int flockScanCount() { return flockHitCount; }
+
 void createFlockDetector() {
     // Reset state
     flockHitCount     = 0;
@@ -12014,31 +12733,26 @@ void createFlockDetector() {
     lv_obj_set_style_pad_row(flockList,      1, LV_PART_MAIN);
 
     lv_obj_t *initLbl =
-        lv_list_add_text(flockList, "Hopping ch 1-13 — watching beacons & probes...");
+        lv_list_add_text(flockList, "No matching beacons or probes yet.");
     if (initLbl)
         lv_obj_set_style_text_color(initLbl,
             lv_color_hex(TH.textDim), LV_PART_MAIN);
 
     lv_obj_t *backBtn = createBackBtn(wifiToolScreen, cb_wifiToolBack);
+    lv_obj_t *startBtn = createActionBtn(wifiToolScreen, LV_SYMBOL_PLAY "  Start", [](lv_event_t *) {});
+    flockBackBtn = backBtn; flockStartBtn = startBtn;
     deleteGroup(&wifiToolGroup);
     wifiToolGroup = lv_group_create();
     lv_group_add_obj(wifiToolGroup, backBtn);
+    lv_group_add_obj(wifiToolGroup, startBtn);
     setGroup(wifiToolGroup);
 
     // Yellow-orange LEDs — distinct from deauth (green) and pwnagotchi (pink)
     setAllLEDs(220, 120, 0, LED_BRIGHTNESS);
 
-    // Start promiscuous sniffer
-    flockActive = true;
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    esp_wifi_set_promiscuous(true);
-    esp_wifi_set_promiscuous_rx_cb(flock_sniffer_cb);
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    deauthChannel = 1;
-
-    if (flockTimer) { lv_timer_delete(flockTimer); flockTimer = nullptr; }
-    flockTimer = lv_timer_create(flock_refresh_cb, 1500, nullptr);
+    attachScanSession(wifiToolScreen, &wifiToolGroup, flockBackBtn, flockStartBtn,
+                      flockStatusLbl, "scanFlock", (uint32_t)wifiScanSeconds * 1000UL,
+                      {flockScanStart, flockScanPoll, flockScanStop, flockScanCount}, true);
 
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -12054,12 +12768,23 @@ static const char *hybridSignalQuality(int8_t rssi) {
     return "WEAK";
 }
 
+static int hybridFocusedIndex() {
+    if (!hybridList || !wifiToolGroup) return -1;
+    lv_obj_t *focused = lv_group_get_focused(wifiToolGroup);
+    for (int i = 0; i < hybridHitCount; ++i)
+        if (lv_obj_get_child(hybridList, i) == focused) return i;
+    return -1;
+}
+
 static void hybridUpsertHit(const char *source, const char *name, const char *mac,
                             int8_t rssi, const char *reason,
                             const char *method = "Name",
                             const char *confidence = "High",
                             const char *type = "Flock") {
     if (!source || !name || !mac || !reason) return;
+    char alertKey[28];
+    snprintf(alertKey, sizeof(alertKey), "%s:%s", source, mac);
+    const bool shouldAlert = scanShouldAlert(alertKey);
 
     for (int i = 0; i < hybridHitCount; i++) {
         if (strcmp(hybridHits[i].source, source) == 0 &&
@@ -12077,12 +12802,22 @@ static void hybridUpsertHit(const char *source, const char *name, const char *ma
             hybridHits[i].rssi = rssi;
             hybridHits[i].count++;
             hybridHits[i].lastSeen = millis();
+            if (shouldAlert) playFlockChirp();
             return;
         }
     }
 
-    if (hybridHitCount >= MAX_FLOCK_HYBRID_HITS) return;
-    FlockHybridHit &h = hybridHits[hybridHitCount++];
+    int slot = hybridHitCount;
+    if (hybridHitCount >= MAX_FLOCK_HYBRID_HITS) {
+        const int focused = hybridFocusedIndex();
+        slot = -1;
+        for (int i = 0; i < hybridHitCount; ++i) {
+            if (i == focused) continue;
+            if (slot < 0 || hybridHits[i].lastSeen < hybridHits[slot].lastSeen) slot = i;
+        }
+        if (slot < 0) return;
+    } else ++hybridHitCount;
+    FlockHybridHit &h = hybridHits[slot];
     memset(&h, 0, sizeof(h));
     strncpy(h.source, source, sizeof(h.source) - 1);
     strncpy(h.name, name, sizeof(h.name) - 1);
@@ -12095,7 +12830,7 @@ static void hybridUpsertHit(const char *source, const char *name, const char *ma
     h.count = 1;
     h.firstSeen = millis();
     h.lastSeen = millis();
-    playFlockChirp();
+    if (shouldAlert) playFlockChirp();
 }
 
 static void hybridSortByRSSI() {
@@ -12140,6 +12875,7 @@ static void hybridRebuildList() {
         lv_obj_t *e = lv_list_add_text(hybridList,
             "No combined Flock hits yet. Press Start Scan.");
         if (e) lv_obj_set_style_text_color(e, lv_color_hex(TH.textDim), LV_PART_MAIN);
+        scanRestoreControls();
         setGroup(wifiToolGroup);
         return;
     }
@@ -12172,11 +12908,13 @@ static void hybridRebuildList() {
                 strcmp(hybridHits[i].source, "BLE") == 0 ? lv_color_hex(TH.accent) : lv_color_hex(TH.alert),
                 LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-                createFlockHybridDetail((int)(intptr_t)lv_event_get_user_data(ev));
+                scanRequestNavigation(createFlockHybridDetail,
+                                      (int)(intptr_t)lv_event_get_user_data(ev));
             }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
             lv_group_add_obj(wifiToolGroup, btn);
         }
     }
+    scanRestoreControls();
     setGroup(wifiToolGroup);
 }
 
@@ -12344,6 +13082,128 @@ static void hybrid_wifi_sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) 
     hybridPendingRSSI = pkt->rx_ctrl.rssi;
     hybridPendingReady = true;
 }
+
+static void hybridBleResult(BLEAdvertisedDevice &dev, void *) {
+    char reason[24], method[24], confidence[8], deviceType[20];
+    const bool match = detectFlockBLE(dev, reason, sizeof(reason), method, sizeof(method),
+                                      confidence, sizeof(confidence),
+                                      deviceType, sizeof(deviceType));
+    String name = match && dev.haveName() ? dev.getName().c_str() : "<unknown>";
+    String mac = match ? dev.getAddress().toString().c_str() : "";
+    HybridBleMailbox candidate{};
+    if (match) {
+        snprintf(candidate.name, sizeof(candidate.name), "%s", name.c_str());
+        snprintf(candidate.mac, sizeof(candidate.mac), "%s", mac.c_str());
+        snprintf(candidate.reason, sizeof(candidate.reason), "%s", reason);
+        snprintf(candidate.method, sizeof(candidate.method), "%s", method);
+        snprintf(candidate.confidence, sizeof(candidate.confidence), "%s", confidence);
+        snprintf(candidate.type, sizeof(candidate.type), "%s", deviceType);
+        candidate.rssi = (int8_t)dev.getRSSI();
+        candidate.ready = true;
+    }
+    portENTER_CRITICAL(&hybridBleMux);
+    ++hybridBleHeardCount;
+    if (match && !hybridBleMailbox.ready) {
+        hybridBleMailbox = candidate;
+    }
+    portEXIT_CRITICAL(&hybridBleMux);
+}
+
+static void hybridConsumeBleMailbox() {
+    HybridBleMailbox hit{};
+    portENTER_CRITICAL(&hybridBleMux);
+    if (hybridBleMailbox.ready) {
+        hit = hybridBleMailbox;
+        hybridBleMailbox.ready = false;
+    }
+    portEXIT_CRITICAL(&hybridBleMux);
+    if (!hit.ready) return;
+    hybridUpsertHit("BLE", hit.name, hit.mac, hit.rssi, hit.reason,
+                    hit.method, hit.confidence, hit.type);
+    hybridRebuildList();
+}
+
+static bool hybridBeginBlePhase() {
+    hybridPhase = HybridScanPhase::Ble;
+    scanSessionPhase("BLE");
+    return hybridBleScan.begin((uint32_t)flockHybridBleSecs, hybridBleResult, nullptr);
+}
+
+static bool hybridBeginWifiPhase() {
+    WiFi.mode(WIFI_STA); WiFi.disconnect();
+    hybridPendingReady = false;
+    hybridWifiActive = true;
+    hybridWifiChannel = 1;
+    hybridWifiPhaseStartedMs = hybridWifiLastHopMs = millis();
+    deauthChannel = 1;
+    esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(nullptr);
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous_rx_cb(hybrid_wifi_sniffer_cb);
+    esp_wifi_set_promiscuous(true);
+    hybridPhase = HybridScanPhase::Wifi;
+    scanSessionPhase("WiFi");
+    return true;
+}
+
+static bool hybridScanStart() {
+    if (!scanSessionIsResume()) {
+        hybridHitCount = 0; hybridBleHeardCount = 0;
+        memset(hybridHits, 0, sizeof(hybridHits));
+        hybridRebuildList();
+    }
+    hybridPendingReady = false;
+    portENTER_CRITICAL(&hybridBleMux);
+    hybridBleMailbox.ready = false;
+    portEXIT_CRITICAL(&hybridBleMux);
+    return hybridBeginBlePhase();
+}
+
+static void hybridScanPoll() {
+    hybridBleScan.poll();
+    hybridConsumeBleMailbox();
+    if (hybridPhase == HybridScanPhase::Ble) {
+        if (hybridBleScan.completed()) {
+            if (!hybridBeginWifiPhase()) scanSessionError("Hybrid WiFi phase failed");
+        }
+        return;
+    }
+    if (hybridPhase != HybridScanPhase::Wifi) return;
+    if (hybridPendingReady) { hybridProcessPendingWifi(); hybridRebuildList(); }
+    const uint32_t now = millis();
+    const uint16_t dwell = flockAdaptiveDwellMs(hybridWifiChannel, flockHybridHopMs);
+    if (now - hybridWifiLastHopMs >= dwell) {
+        hybridWifiLastHopMs = now;
+        hybridWifiChannel = (hybridWifiChannel % 13) + 1;
+        deauthChannel = hybridWifiChannel;
+        esp_wifi_set_channel(hybridWifiChannel, WIFI_SECOND_CHAN_NONE);
+    }
+    if (now - hybridWifiPhaseStartedMs >= (uint32_t)flockHybridWifiSecs * 1000UL) {
+        hybridWifiActive = false;
+        esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(nullptr);
+        hybridProcessPendingWifi(); hybridRebuildList();
+        if (!hybridBeginBlePhase()) scanSessionError("Hybrid BLE phase failed");
+    }
+}
+
+static bool hybridScanStop() {
+    if (hybridPhase == HybridScanPhase::Ble) {
+        if (!hybridBleScan.stop()) {
+            if (hybridBleScan.stopFailed()) scanSessionError(hybridBleScan.status());
+            return false;
+        }
+    }
+    hybridWifiActive = false;
+    esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(nullptr);
+    hybridPendingReady = false;
+    portENTER_CRITICAL(&hybridBleMux);
+    hybridBleMailbox.ready = false;
+    portEXIT_CRITICAL(&hybridBleMux);
+    hybridPhase = HybridScanPhase::Idle;
+    stopLEDSpinner(FLOCK_HYBRID_LED_R, FLOCK_HYBRID_LED_G, FLOCK_HYBRID_LED_B);
+    return true;
+}
+
+static int hybridScanCount() { return hybridHitCount; }
 
 static void runFlockHybridCycle() {
     if (!hybridStatusLbl || !hybridList) return;
@@ -12564,6 +13424,11 @@ void createFlockHybridScanner() {
 
     hybridRebuildList();
 
+    attachScanSession(wifiToolScreen, &wifiToolGroup, hybridBackBtn, hybridScanBtn,
+                      hybridStatusLbl, "scanHybrid",
+                      ((uint32_t)flockHybridBleSecs + (uint32_t)flockHybridWifiSecs) * 1000UL,
+                      {hybridScanStart, hybridScanPoll, hybridScanStop, hybridScanCount}, true);
+
     setAllLEDs(FLOCK_HYBRID_LED_R, FLOCK_HYBRID_LED_G, FLOCK_HYBRID_LED_B, LED_BRIGHTNESS);
     lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -12572,6 +13437,7 @@ void createFlockHybridScanner() {
 //  BLE SHARED BACK CALLBACKS
 // ════════════════════════════════════════════════════════════════
 static void cb_bleToolBack(lv_event_t *e) {
+    if (scanDeferBack(cb_bleToolBack)) return;
     bleToolScreen = nullptr;
     deleteGroup(&bleToolGroup);
     setGroup(bleMenuGroup);
@@ -12604,9 +13470,10 @@ static const char *BLE_TOOL_LABELS[] = {
 static const int BLE_TOOL_COUNT = sizeof(BLE_TOOL_LABELS) / sizeof(BLE_TOOL_LABELS[0]);
 
 static void cb_bleMenuBack(lv_event_t *e) {
-    lv_screen_load_anim(mainScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
+    bleMenuScreen = nullptr;
     deleteGroup(&bleMenuGroup);
     setGroup(navGroup);
+    lv_screen_load_anim(mainScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, true);
     setAllLEDs(MENU_COLORS[1].r, MENU_COLORS[1].g, MENU_COLORS[1].b);
 }
 
@@ -12627,6 +13494,21 @@ static void cb_bleToolSelected(lv_event_t *e) {
 }
 
 void createBLEMenu() {
+    // Family menus are rebuilt on demand. Keeping the 13-row Wi-Fi menu alive
+    // underneath the BLE menu and a result-heavy scanner leaves too little
+    // contiguous LVGL memory for the next screen-transition layer.
+    if (wifiMenuScreen && wifiMenuScreen != lv_screen_active() &&
+        wifiMenuScreen != lv_display_get_screen_prev(lvDisp)) {
+        lv_obj_delete(wifiMenuScreen);
+        wifiMenuScreen = nullptr;
+        deleteGroup(&wifiMenuGroup);
+        wifiLanDiscoveryBtn = nullptr;
+        wifiLanDiscoveryBtnHasEvent = false;
+        wifiLanDiscoveryBtnEnabled = false;
+        wifiGatewayInfoBtn = nullptr;
+        wifiGatewayInfoBtnHasEvent = false;
+        wifiGatewayInfoBtnEnabled = false;
+    }
     if (bleMenuScreen) { lv_obj_delete(bleMenuScreen); bleMenuScreen = nullptr; }
     bleMenuScreen = lv_obj_create(nullptr);
     applyScreenStyle(bleMenuScreen);
@@ -12688,11 +13570,14 @@ static void rebuildBLEScanList() {
         strncpy(nameTrunc, bleEntries[i].name, 15);
         nameTrunc[15] = '\0';
 
-        char row[56];
-        snprintf(row, sizeof(row), "%-15s %-9s %ddBm",
+        const uint32_t age = bleEntries[i].lastSeen ? (millis() - bleEntries[i].lastSeen) / 1000UL : 0;
+        char row[72];
+        snprintf(row, sizeof(row), "%-15s %-9s %ddBm %s%lus",
                  nameTrunc,
                  bleEntries[i].mfgHint,
-                 bleEntries[i].rssi);
+                 bleEntries[i].rssi,
+                 age >= 60 ? "stale " : "",
+                 (unsigned long)age);
 
         lv_obj_t *btn = lv_list_add_btn(bleScanList, nullptr, row);
         styleListBtn(btn);
@@ -12709,10 +13594,11 @@ static void rebuildBLEScanList() {
         lv_obj_set_style_text_color(btn, col, LV_PART_MAIN | LV_STATE_DEFAULT);
 
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createBLEDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createBLEDetail, (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, btn);
     }
+    scanRestoreControls();
 }
 
 static void cb_doBLEScan(lv_event_t *e) {
@@ -12778,6 +13664,9 @@ void createBLEScanner() {
     lv_group_add_obj(bleToolGroup, bleScanBackBtn);
     lv_group_add_obj(bleToolGroup, bleScanScanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, bleScanBackBtn, bleScanScanBtn,
+                      bleScanStatusLbl, "bleGeneric", bleScanSeconds * 1000UL,
+                      {startLiveBleGeneric, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     lv_screen_load_anim(bleToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -12850,6 +13739,8 @@ void createBLEDetail(int idx) {
 
     // Detail fields
     int8_t rssi = bleEntries[idx].rssi;
+    const uint32_t ageSeconds = bleEntries[idx].lastSeen
+        ? (millis() - bleEntries[idx].lastSeen) / 1000UL : 0;
     const char *quality =
         rssi >= -55 ? "Excellent" :
         rssi >= -65 ? "Good"      :
@@ -12861,19 +13752,23 @@ void createBLEDetail(int idx) {
                  "Name  : %s\n"
                  "Color : %s\n"
                  "MAC   : %s\n"
-                 "RSSI  : %d dBm  (%s)",
+                 "RSSI  : %d dBm  (%s)\n"
+                 "Seen  : %lus ago%s",
                  bleEntries[idx].name,
                  bleEntries[idx].flipperColor[0] ? bleEntries[idx].flipperColor : "Unknown",
                  bleEntries[idx].mac,
-                 rssi, quality);
+                 rssi, quality, (unsigned long)ageSeconds,
+                 ageSeconds >= 60 ? " (stale)" : "");
     } else {
         snprintf(info, sizeof(info),
                  "Name  : %s\n"
                  "MAC   : %s\n"
-                 "RSSI  : %d dBm  (%s)",
+                 "RSSI  : %d dBm  (%s)\n"
+                 "Seen  : %lus ago%s",
                  bleEntries[idx].name,
                  bleEntries[idx].mac,
-                 rssi, quality);
+                 rssi, quality, (unsigned long)ageSeconds,
+                 ageSeconds >= 60 ? " (stale)" : "");
     }
 
     lv_obj_t *infoLbl = lv_label_create(card);
@@ -12962,7 +13857,7 @@ static void cb_doAirTagScan(lv_event_t *e) {
         lv_obj_t *entry = lv_list_add_btn(airtagList, nullptr, row);
         styleListBtn(entry);
         lv_obj_add_event_cb(entry, [](lv_event_t *e) {
-            createBLEDetail((int)(intptr_t)lv_event_get_user_data(e));
+            scanRequestNavigation(createBLEDetail, (int)(intptr_t)lv_event_get_user_data(e));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, entry);
     }
@@ -13001,6 +13896,9 @@ void createAirTagScanner() {
     lv_group_add_obj(bleToolGroup, backBtn);
     lv_group_add_obj(bleToolGroup, scanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, airtagBackBtn, airtagScanBtn,
+                      airtagStatusLbl, "bleAirTag", bleScanSeconds * 1000UL,
+                      {startLiveBleAirTag, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     lv_screen_load_anim(bleToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -13068,7 +13966,7 @@ static void cb_doFlipperScan(lv_event_t *e) {
             styleListBtn(btn);
             lv_obj_set_style_text_color(btn, lv_color_hex(0xff9900), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-                createBLEDetail((int)(intptr_t)lv_event_get_user_data(ev));
+                scanRequestNavigation(createBLEDetail, (int)(intptr_t)lv_event_get_user_data(ev));
             }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
             lv_group_add_obj(bleToolGroup, btn);
         }
@@ -13102,6 +14000,9 @@ void createFlipperScanner() {
                                      cb_doFlipperScan);
 
     resetFlipperToolGroup();
+    attachScanSession(bleToolScreen, &bleToolGroup, flipperBackBtn, flipperScanBtn,
+                      flipperStatusLbl, "bleFlipper", bleScanSeconds * 1000UL,
+                      {startLiveBleFlipper, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     lv_screen_load_anim(bleToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -13138,6 +14039,7 @@ static void rebuildNyanBoxList() {
         lv_obj_t *empty = lv_list_add_text(nyanList, "No nyanBOX devices found yet");
         if (empty) lv_obj_set_style_text_color(empty, lv_color_hex(TH.textDim), LV_PART_MAIN);
         setGroup(bleToolGroup);
+        scanRestoreControls();
         return;
     }
 
@@ -13147,24 +14049,28 @@ static void rebuildNyanBoxList() {
         nameTrunc[11] = '\0';
 
         char row[64];
+        const uint32_t age = (millis() - nyanEntries[i].lastSeen) / 1000UL;
         if (nyanEntries[i].level > 0) {
-            snprintf(row, sizeof(row), "%s  L%u  %ddBm",
-                     nameTrunc, nyanEntries[i].level, nyanEntries[i].rssi);
+            snprintf(row, sizeof(row), "%s L%u %ddBm %s%lus",
+                     nameTrunc, nyanEntries[i].level, nyanEntries[i].rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
         } else {
-            snprintf(row, sizeof(row), "%s  L?  %ddBm",
-                     nameTrunc, nyanEntries[i].rssi);
+            snprintf(row, sizeof(row), "%s L? %ddBm %s%lus",
+                     nameTrunc, nyanEntries[i].rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
         }
 
         lv_obj_t *btn = lv_list_add_btn(nyanList, nullptr, row);
         styleListBtn(btn);
         lv_obj_set_style_text_color(btn, bleRssiColor(nyanEntries[i].rssi), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createNyanBoxDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createNyanBoxDetail, (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, btn);
     }
 
     setGroup(bleToolGroup);
+    scanRestoreControls();
 }
 
 static void cb_doNyanBoxScan(lv_event_t *e) {
@@ -13238,6 +14144,9 @@ void createNyanBoxDetector() {
     lv_group_add_obj(bleToolGroup, nyanBackBtn);
     lv_group_add_obj(bleToolGroup, nyanScanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, nyanBackBtn, nyanScanBtn,
+                      nyanStatusLbl, "bleNyan", NYANBOX_SCAN_SECS * 1000UL,
+                      {startLiveBleNyan, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     if (nyanEntryCount > 0) {
         char msg[56];
@@ -13292,7 +14201,7 @@ void createNyanBoxDetail(int idx) {
              "RSSI : %d dBm (%s)\n"
              "Level: %s%u\n"
              "FW   : %s\n"
-             "Age  : %lus",
+             "Age  : %lus%s",
              nyanEntries[idx].name,
              nyanEntries[idx].mac,
              nyanEntries[idx].rssi,
@@ -13300,7 +14209,7 @@ void createNyanBoxDetail(int idx) {
              nyanEntries[idx].level > 0 ? "" : "?",
              nyanEntries[idx].level,
              nyanEntries[idx].version,
-             (unsigned long)ageSec);
+             (unsigned long)ageSec, ageSec >= 60 ? " (stale)" : "");
 
     lv_obj_t *infoLbl = lv_label_create(card);
     lv_label_set_text(infoLbl, info);
@@ -13461,6 +14370,7 @@ static void rebuildAxonList() {
         lv_obj_t *empty = lv_list_add_text(axonList, "No Axon devices found yet");
         if (empty) lv_obj_set_style_text_color(empty, lv_color_hex(TH.textDim), LV_PART_MAIN);
         setGroup(bleToolGroup);
+        scanRestoreControls();
         return;
     }
 
@@ -13470,17 +14380,20 @@ static void rebuildAxonList() {
         nameTrunc[11] = '\0';
 
         char row[64];
+        const uint32_t age = (millis() - axonEntries[i].lastSeen) / 1000UL;
 #if AXON_SHOW_FULL_MAC
-        snprintf(row, sizeof(row), "%s  %ddBm", nameTrunc, axonEntries[i].rssi);
+        snprintf(row, sizeof(row), "%s %ddBm %s%lus", nameTrunc, axonEntries[i].rssi,
+                 age >= 60 ? "stale " : "", (unsigned long)age);
 #else
-        snprintf(row, sizeof(row), "%s  %ddBm", nameTrunc, axonEntries[i].rssi);
+        snprintf(row, sizeof(row), "%s %ddBm %s%lus", nameTrunc, axonEntries[i].rssi,
+                 age >= 60 ? "stale " : "", (unsigned long)age);
 #endif
 
         lv_obj_t *btn = lv_list_add_btn(axonList, nullptr, row);
         styleListBtn(btn);
         lv_obj_set_style_text_color(btn, bleRssiColor(axonEntries[i].rssi), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createAxonDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createAxonDetail, (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, btn);
 
@@ -13491,6 +14404,7 @@ static void rebuildAxonList() {
     }
 
     setGroup(bleToolGroup);
+    scanRestoreControls();
 }
 
 static void cb_doAxonScan(lv_event_t *e) {
@@ -13564,6 +14478,9 @@ void createAxonDetector() {
     lv_group_add_obj(bleToolGroup, axonBackBtn);
     lv_group_add_obj(bleToolGroup, axonScanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, axonBackBtn, axonScanBtn,
+                      axonStatusLbl, "bleAxon", AXON_SCAN_SECS * 1000UL,
+                      {startLiveBleAxon, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     if (axonEntryCount > 0) {
         char msg[56];
@@ -13616,13 +14533,13 @@ void createAxonDetail(int idx) {
              "Name : %s\n"
              "MAC  : %s\n"
              "RSSI : %d dBm (%s)\n"
-             "Age  : %lus\n"
+             "Age  : %lus%s\n"
              "Prefix: %s",
              axonEntries[idx].name,
              axonEntries[idx].mac,
              axonEntries[idx].rssi,
              axonSignalQuality(axonEntries[idx].rssi),
-             (unsigned long)ageSec,
+             (unsigned long)ageSec, ageSec >= 60 ? " (stale)" : "",
              AXON_MAC_PREFIX);
 
     lv_obj_t *infoLbl = lv_label_create(card);
@@ -13867,23 +14784,26 @@ static void rebuildRavenList() {
     if (ravenEntryCount == 0) {
         lv_obj_t *empty = lv_list_add_text(ravenList, "No Raven UUID patterns found yet");
         if (empty) lv_obj_set_style_text_color(empty, lv_color_hex(TH.textDim), LV_PART_MAIN);
+        scanRestoreControls();
         return;
     }
 
     for (int i = 0; i < ravenEntryCount; i++) {
         char row[96];
         const char *uuidLabel = ravenUuidLabel(ravenEntries[i].matchedUuid);
-        snprintf(row, sizeof(row), "%s  %ddBm  FW:%s",
+        const uint32_t age = (millis() - ravenEntries[i].lastSeen) / 1000UL;
+        snprintf(row, sizeof(row), "%s %ddBm FW:%s %s%lus",
                  uuidLabel,
                  ravenEntries[i].rssi,
-                 ravenEntries[i].fwEstimate);
+                 ravenEntries[i].fwEstimate,
+                 age >= 60 ? "stale " : "", (unsigned long)age);
 
         lv_obj_t *btn = lv_list_add_btn(ravenList, nullptr, row);
         styleListBtn(btn);
         lv_obj_set_style_text_color(btn, bleRssiColor(ravenEntries[i].rssi),
                                     LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createRavenDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createRavenDetail, (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, btn);
 
@@ -13898,6 +14818,7 @@ static void rebuildRavenList() {
     }
 
     setGroup(bleToolGroup);
+    scanRestoreControls();
 }
 
 static void cb_doRavenScan(lv_event_t *e) {
@@ -13965,6 +14886,9 @@ void createRavenDetector() {
     lv_group_add_obj(bleToolGroup, ravenBackBtn);
     lv_group_add_obj(bleToolGroup, ravenScanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, ravenBackBtn, ravenScanBtn,
+                      ravenStatusLbl, "bleRaven", RAVEN_SCAN_SECS * 1000UL,
+                      {startLiveBleRaven, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     if (ravenEntryCount > 0) {
         char msg[56];
@@ -14018,7 +14942,7 @@ void createRavenDetail(int idx) {
              "Svc  : %s\n"
              "Hits : %u\n"
              "FW   : %s\n"
-             "Age  : %lus\n"
+             "Age  : %lus%s\n"
              "Mode : passive BLE UUID scan",
              ravenEntries[idx].name,
              ravenEntries[idx].mac,
@@ -14028,7 +14952,7 @@ void createRavenDetail(int idx) {
              ravenEntries[idx].matchedUuid,
              ravenEntries[idx].uuidHitCount,
              ravenEntries[idx].fwEstimate,
-             (unsigned long)ageSec);
+             (unsigned long)ageSec, ageSec >= 60 ? " (stale)" : "");
 
     lv_obj_t *infoLbl = lv_label_create(card);
     lv_label_set_text(infoLbl, info);
@@ -14183,22 +15107,25 @@ static void rebuildSmartChargerList() {
     if (chargerEntryCount == 0) {
         lv_obj_t *empty = lv_list_add_text(chargerList, "No smart charger matches found yet");
         if (empty) lv_obj_set_style_text_color(empty, lv_color_hex(TH.textDim), LV_PART_MAIN);
+        scanRestoreControls();
         return;
     }
 
     for (int i = 0; i < chargerEntryCount; i++) {
         char row[112];
-        snprintf(row, sizeof(row), "%s  %ddBm  %s",
+        const uint32_t age = (millis() - chargerEntries[i].lastSeen) / 1000UL;
+        snprintf(row, sizeof(row), "%.14s %ddBm %s %s%lus",
                  chargerEntries[i].name,
                  chargerEntries[i].rssi,
-                 chargerConfidenceLabel(chargerEntries[i].confidence));
+                 chargerConfidenceLabel(chargerEntries[i].confidence),
+                 age >= 60 ? "stale " : "", (unsigned long)age);
 
         lv_obj_t *btn = lv_list_add_btn(chargerList, nullptr, row);
         styleListBtn(btn);
         lv_obj_set_style_text_color(btn, bleRssiColor(chargerEntries[i].rssi),
                                     LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createSmartChargerDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createSmartChargerDetail, (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, btn);
 
@@ -14213,6 +15140,7 @@ static void rebuildSmartChargerList() {
     }
 
     setGroup(bleToolGroup);
+    scanRestoreControls();
 }
 
 static void cb_doSmartChargerScan(lv_event_t *e) {
@@ -14280,6 +15208,9 @@ void createSmartChargerMonitor() {
     lv_group_add_obj(bleToolGroup, chargerBackBtn);
     lv_group_add_obj(bleToolGroup, chargerScanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, chargerBackBtn, chargerScanBtn,
+                      chargerStatusLbl, "bleCharger", CHARGER_SCAN_SECS * 1000UL,
+                      {startLiveBleCharger, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     if (chargerEntryCount > 0) {
         char msg[60];
@@ -14337,7 +15268,7 @@ void createSmartChargerDetail(int idx) {
              "Match: %s\n"
              "Svc  : %s\n"
              "MFR  : %s\n"
-             "Age  : %lus\n\n"
+             "Age  : %lus%s\n\n"
              "Known GATT from nRF logs:\n"
              "FFF0 service\n"
              "FFF1 Write | FFF3 WNR\n"
@@ -14351,7 +15282,7 @@ void createSmartChargerDetail(int idx) {
              chargerEntries[idx].matchMethod,
              chargerEntries[idx].advUuid,
              chargerEntries[idx].mfgPreview,
-             (unsigned long)ageSec);
+             (unsigned long)ageSec, ageSec >= 60 ? " (stale)" : "");
 
     lv_obj_t *infoLbl = lv_label_create(card);
     lv_label_set_text(infoLbl, info);
@@ -14491,6 +15422,7 @@ static void rebuildTeslaList() {
     if (teslaEntryCount == 0) {
         lv_obj_t *empty = lv_list_add_text(teslaList, "No Tesla BLE patterns found yet");
         if (empty) lv_obj_set_style_text_color(empty, lv_color_hex(TH.textDim), LV_PART_MAIN);
+        scanRestoreControls();
         return;
     }
 
@@ -14500,13 +15432,15 @@ static void rebuildTeslaList() {
         nameTrunc[18] = '\0';
 
         char row[64];
-        snprintf(row, sizeof(row), "%-18s %ddBm", nameTrunc, teslaEntries[i].rssi);
+        const uint32_t age = (millis() - teslaEntries[i].lastSeen) / 1000UL;
+        snprintf(row, sizeof(row), "%-18s %ddBm %s%lus", nameTrunc, teslaEntries[i].rssi,
+                 age >= 60 ? "stale " : "", (unsigned long)age);
 
         lv_obj_t *btn = lv_list_add_btn(teslaList, nullptr, row);
         styleListBtn(btn);
         lv_obj_set_style_text_color(btn, bleRssiColor(teslaEntries[i].rssi), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_add_event_cb(btn, [](lv_event_t *ev) {
-            createTeslaDetail((int)(intptr_t)lv_event_get_user_data(ev));
+            scanRequestNavigation(createTeslaDetail, (int)(intptr_t)lv_event_get_user_data(ev));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, btn);
 
@@ -14517,6 +15451,7 @@ static void rebuildTeslaList() {
     }
 
     setGroup(bleToolGroup);
+    scanRestoreControls();
 }
 
 static void cb_doTeslaScan(lv_event_t *e) {
@@ -14590,6 +15525,9 @@ void createTeslaDetector() {
     lv_group_add_obj(bleToolGroup, teslaBackBtn);
     lv_group_add_obj(bleToolGroup, teslaScanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, teslaBackBtn, teslaScanBtn,
+                      teslaStatusLbl, "bleTesla", TESLA_SCAN_SECS * 1000UL,
+                      {startLiveBleTesla, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     if (teslaEntryCount > 0) {
         char msg[56];
@@ -14637,13 +15575,13 @@ void createTeslaDetail(int idx) {
              "Name : %s\n"
              "MAC  : %s\n"
              "RSSI : %d dBm (%s)\n"
-             "Age  : %lus\n"
+             "Age  : %lus%s\n"
              "Rule : name[0]=%c, name[%d]=%c",
              teslaEntries[idx].name,
              teslaEntries[idx].mac,
              teslaEntries[idx].rssi,
              teslaSignalQuality(teslaEntries[idx].rssi),
-             (unsigned long)ageSec,
+             (unsigned long)ageSec, ageSec >= 60 ? " (stale)" : "",
              TESLA_NAME_START_CHAR,
              TESLA_NAME_END_INDEX,
              TESLA_NAME_END_CHAR);
@@ -14746,7 +15684,7 @@ static void cb_doSkimmerScan(lv_event_t *e) {
         styleListBtn(entry);
         lv_obj_set_style_text_color(entry, lv_color_hex(TH.alert), LV_PART_MAIN);
         lv_obj_add_event_cb(entry, [](lv_event_t *e) {
-            createBLEDetail((int)(intptr_t)lv_event_get_user_data(e));
+            scanRequestNavigation(createBLEDetail, (int)(intptr_t)lv_event_get_user_data(e));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, entry);
     }
@@ -14790,6 +15728,9 @@ void createSkimmerScanner() {
     lv_group_add_obj(bleToolGroup, backBtn);
     lv_group_add_obj(bleToolGroup, scanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, skimmerBackBtn, skimmerScanBtn,
+                      skimmerStatusLbl, "bleSkimmer", bleScanSeconds * 1000UL,
+                      {startLiveBleSkimmer, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     lv_screen_load_anim(bleToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
@@ -14858,7 +15799,7 @@ static void cb_doMetaScan(lv_event_t *e) {
         styleListBtn(entry);
         lv_obj_set_style_text_color(entry, lv_color_hex(TH.accent), LV_PART_MAIN);
         lv_obj_add_event_cb(entry, [](lv_event_t *e) {
-            createBLEDetail((int)(intptr_t)lv_event_get_user_data(e));
+            scanRequestNavigation(createBLEDetail, (int)(intptr_t)lv_event_get_user_data(e));
         }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_group_add_obj(bleToolGroup, entry);
     }
@@ -14901,8 +15842,278 @@ void createMetaDetector() {
     lv_group_add_obj(bleToolGroup, backBtn);
     lv_group_add_obj(bleToolGroup, scanBtn);
     setGroup(bleToolGroup);
+    attachScanSession(bleToolScreen, &bleToolGroup, metaBackBtn, metaScanBtn,
+                      metaStatusLbl, "bleMeta", bleScanSeconds * 1000UL,
+                      {startLiveBleMeta, pollLiveBleUi, stopLiveBleScan, liveBleResultCount});
 
     lv_screen_load_anim(bleToolScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+}
+
+static lv_obj_t *liveBleListForMode() {
+    switch (liveBleMode) {
+        case LiveBleMode::Generic: return bleScanList;
+        case LiveBleMode::AirTag: return airtagList;
+        case LiveBleMode::Flipper: return flipperList;
+        case LiveBleMode::NyanBox: return nyanList;
+        case LiveBleMode::Axon: return axonList;
+        case LiveBleMode::Raven: return ravenList;
+        case LiveBleMode::Charger: return chargerList;
+        case LiveBleMode::Tesla: return teslaList;
+        case LiveBleMode::Skimmer: return skimmerList;
+        case LiveBleMode::Meta: return metaList;
+    }
+    return nullptr;
+}
+
+static int liveBleRowIndex(lv_obj_t *object, lv_obj_t *list) {
+    if (!object || !list || lv_obj_get_parent(object) != list) return -1;
+    const uint32_t count = lv_obj_get_event_count(object);
+    for (uint32_t i = 0; i < count; ++i) {
+        lv_event_dsc_t *event = lv_obj_get_event_dsc(object, i);
+        if (event && event->filter == LV_EVENT_CLICKED) {
+            return (int)(intptr_t)lv_event_dsc_get_user_data(event);
+        }
+    }
+    return -1;
+}
+
+static lv_obj_t *liveBleFindRow(lv_obj_t *list, int resultIndex) {
+    if (!list || resultIndex < 0) return nullptr;
+    const uint32_t count = lv_obj_get_child_count(list);
+    for (uint32_t i = 0; i < count; ++i) {
+        lv_obj_t *child = lv_obj_get_child(list, i);
+        if (liveBleRowIndex(child, list) == resultIndex &&
+            lv_obj_get_group(child) == bleToolGroup) return child;
+    }
+    return nullptr;
+}
+
+static bool formatLiveBleRow(LiveBleMode mode, int index, char *row, size_t rowSize) {
+    const uint32_t now = millis();
+    if (mode == LiveBleMode::Generic || mode == LiveBleMode::AirTag ||
+        mode == LiveBleMode::Flipper || mode == LiveBleMode::Skimmer ||
+        mode == LiveBleMode::Meta) {
+        if (index < 0 || index >= bleEntryCount) return false;
+        const BLEEntry &entry = bleEntries[index];
+        const uint32_t age = entry.lastSeen ? (now - entry.lastSeen) / 1000UL : 0;
+        if (mode == LiveBleMode::AirTag) {
+            snprintf(row, rowSize, "%s %ddBm %s%lus", entry.mac, entry.rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
+        } else if (mode == LiveBleMode::Flipper) {
+            snprintf(row, rowSize, "%.12s %.8s %ddBm %s%lus", entry.name,
+                     entry.flipperColor[0] ? entry.flipperColor : "Unknown", entry.rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
+        } else if (mode == LiveBleMode::Skimmer || mode == LiveBleMode::Meta) {
+            snprintf(row, rowSize, "%.12s %s %ddBm %s%lus",
+                     entry.name[0] ? entry.name : "<unknown>", entry.mac, entry.rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
+        } else {
+            char name[16];
+            strncpy(name, entry.name, sizeof(name) - 1); name[sizeof(name) - 1] = '\0';
+            snprintf(row, rowSize, "%-15s %-9s %ddBm %s%lus", name, entry.mfgHint,
+                     entry.rssi, age >= 60 ? "stale " : "", (unsigned long)age);
+        }
+        return true;
+    }
+
+    if (mode == LiveBleMode::NyanBox) {
+        if (index < 0 || index >= nyanEntryCount) return false;
+        const NyanBoxEntry &entry = nyanEntries[index];
+        char name[12];
+        strncpy(name, entry.name[0] ? entry.name : "Unknown", sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+        const uint32_t age = (now - entry.lastSeen) / 1000UL;
+        if (entry.level > 0)
+            snprintf(row, rowSize, "%s L%u %ddBm %s%lus", name, entry.level, entry.rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
+        else
+            snprintf(row, rowSize, "%s L? %ddBm %s%lus", name, entry.rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
+        return true;
+    }
+    if (mode == LiveBleMode::Axon) {
+        if (index < 0 || index >= axonEntryCount) return false;
+        const AxonEntry &entry = axonEntries[index];
+        char name[12];
+        strncpy(name, entry.name[0] ? entry.name : "Axon", sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+        const uint32_t age = (now - entry.lastSeen) / 1000UL;
+        snprintf(row, rowSize, "%s %ddBm %s%lus", name, entry.rssi,
+                 age >= 60 ? "stale " : "", (unsigned long)age);
+        return true;
+    }
+    if (mode == LiveBleMode::Raven) {
+        if (index < 0 || index >= ravenEntryCount) return false;
+        const RavenEntry &entry = ravenEntries[index];
+        const uint32_t age = (now - entry.lastSeen) / 1000UL;
+        snprintf(row, rowSize, "%s %ddBm FW:%s %s%lus", ravenUuidLabel(entry.matchedUuid),
+                 entry.rssi, entry.fwEstimate, age >= 60 ? "stale " : "",
+                 (unsigned long)age);
+        return true;
+    }
+    if (mode == LiveBleMode::Charger) {
+        if (index < 0 || index >= chargerEntryCount) return false;
+        const SmartChargerEntry &entry = chargerEntries[index];
+        const uint32_t age = (now - entry.lastSeen) / 1000UL;
+        snprintf(row, rowSize, "%.14s %ddBm %s %s%lus", entry.name, entry.rssi,
+                 chargerConfidenceLabel(entry.confidence), age >= 60 ? "stale " : "",
+                 (unsigned long)age);
+        return true;
+    }
+    if (mode == LiveBleMode::Tesla) {
+        if (index < 0 || index >= teslaEntryCount) return false;
+        const TeslaEntry &entry = teslaEntries[index];
+        char name[19];
+        strncpy(name, entry.name, sizeof(name) - 1); name[sizeof(name) - 1] = '\0';
+        const uint32_t age = (now - entry.lastSeen) / 1000UL;
+        snprintf(row, rowSize, "%-18s %ddBm %s%lus", name, entry.rssi,
+                 age >= 60 ? "stale " : "", (unsigned long)age);
+        return true;
+    }
+    return false;
+}
+
+static void refreshLiveBleRowsInPlace() {
+    lv_obj_t *list = liveBleListForMode();
+    if (!list) return;
+    const uint32_t count = lv_obj_get_child_count(list);
+    for (uint32_t i = 0; i < count; ++i) {
+        lv_obj_t *button = lv_obj_get_child(list, i);
+        const int resultIndex = liveBleRowIndex(button, list);
+        if (resultIndex < 0 || lv_obj_get_child_count(button) == 0) continue;
+        char row[112];
+        if (!formatLiveBleRow(liveBleMode, resultIndex, row, sizeof(row))) continue;
+        lv_obj_t *label = lv_obj_get_child(button, 0);
+        const char *current = lv_label_get_text(label);
+        if (!current || strcmp(current, row) != 0) lv_label_set_text(label, row);
+
+        lv_color_t color = lv_color_hex(TH.accent);
+        if (liveBleMode == LiveBleMode::Generic) {
+            switch (bleEntries[resultIndex].type) {
+                case BLE_AIRTAG:  color = lv_color_hex(0xf0f0f0); break;
+                case BLE_FLIPPER: color = lv_color_hex(0xff9900); break;
+                case BLE_APPLE:   color = lv_color_hex(TH.accent); break;
+                case BLE_TESLA:   color = lv_color_hex(0x58a6ff); break;
+                default:          color = bleRssiColor(bleEntries[resultIndex].rssi); break;
+            }
+        } else if (liveBleMode == LiveBleMode::Flipper) {
+            color = lv_color_hex(0xff9900);
+        } else if (liveBleMode == LiveBleMode::Skimmer) {
+            color = lv_color_hex(TH.alert);
+        } else if (liveBleMode == LiveBleMode::NyanBox) {
+            color = bleRssiColor(nyanEntries[resultIndex].rssi);
+        } else if (liveBleMode == LiveBleMode::Axon) {
+            color = bleRssiColor(axonEntries[resultIndex].rssi);
+        } else if (liveBleMode == LiveBleMode::Raven) {
+            color = bleRssiColor(ravenEntries[resultIndex].rssi);
+        } else if (liveBleMode == LiveBleMode::Charger) {
+            color = bleRssiColor(chargerEntries[resultIndex].rssi);
+        } else if (liveBleMode == LiveBleMode::Tesla) {
+            color = bleRssiColor(teslaEntries[resultIndex].rssi);
+        }
+        lv_obj_set_style_text_color(button, color, LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+}
+
+static void rebuildLiveFilteredList(lv_obj_t *list, lv_obj_t *back, lv_obj_t *start,
+                                    LiveBleMode mode) {
+    deleteGroup(&bleToolGroup);
+    bleToolGroup = lv_group_create();
+    lv_group_add_obj(bleToolGroup, back);
+    lv_group_add_obj(bleToolGroup, start);
+    lv_obj_clean(list);
+
+    for (int i = 0; i < bleEntryCount; ++i) {
+        char row[72];
+        const uint32_t age = bleEntries[i].lastSeen ? (millis() - bleEntries[i].lastSeen) / 1000UL : 0;
+        if (mode == LiveBleMode::AirTag) {
+            snprintf(row, sizeof(row), "%s %ddBm %s%lus", bleEntries[i].mac,
+                     bleEntries[i].rssi, age >= 60 ? "stale " : "", (unsigned long)age);
+        } else if (mode == LiveBleMode::Flipper) {
+            snprintf(row, sizeof(row), "%.12s %.8s %ddBm %s%lus", bleEntries[i].name,
+                     bleEntries[i].flipperColor[0] ? bleEntries[i].flipperColor : "Unknown",
+                     bleEntries[i].rssi, age >= 60 ? "stale " : "", (unsigned long)age);
+        } else {
+            snprintf(row, sizeof(row), "%.12s %s %ddBm %s%lus",
+                     bleEntries[i].name[0] ? bleEntries[i].name : "<unknown>",
+                     bleEntries[i].mac, bleEntries[i].rssi,
+                     age >= 60 ? "stale " : "", (unsigned long)age);
+        }
+        lv_obj_t *button = lv_list_add_btn(list, nullptr, row);
+        styleListBtn(button);
+        const uint32_t color = mode == LiveBleMode::Flipper ? 0xff9900 :
+                               mode == LiveBleMode::Skimmer ? TH.alert : TH.accent;
+        lv_obj_set_style_text_color(button, lv_color_hex(color), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_add_event_cb(button, [](lv_event_t *event) {
+            scanRequestNavigation(createBLEDetail,
+                                  (int)(intptr_t)lv_event_get_user_data(event));
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_group_add_obj(bleToolGroup, button);
+    }
+    setGroup(bleToolGroup);
+}
+
+static bool startLiveBleGeneric() { return startLiveBleScan(LiveBleMode::Generic); }
+static bool startLiveBleAirTag()  { return startLiveBleScan(LiveBleMode::AirTag); }
+static bool startLiveBleFlipper() { return startLiveBleScan(LiveBleMode::Flipper); }
+static bool startLiveBleNyan()    { return startLiveBleScan(LiveBleMode::NyanBox); }
+static bool startLiveBleAxon()    { return startLiveBleScan(LiveBleMode::Axon); }
+static bool startLiveBleRaven()   { return startLiveBleScan(LiveBleMode::Raven); }
+static bool startLiveBleCharger() { return startLiveBleScan(LiveBleMode::Charger); }
+static bool startLiveBleTesla()   { return startLiveBleScan(LiveBleMode::Tesla); }
+static bool startLiveBleSkimmer() { return startLiveBleScan(LiveBleMode::Skimmer); }
+static bool startLiveBleMeta()    { return startLiveBleScan(LiveBleMode::Meta); }
+
+static void pollLiveBleUi() {
+    lv_obj_t *list = liveBleListForMode();
+    lv_obj_t *focused = bleToolGroup ? lv_group_get_focused(bleToolGroup) : nullptr;
+    liveBleProtectedIndex = liveBleRowIndex(focused, list);
+    pollLiveBleScan();
+
+    if (liveBleNewAlert) {
+        liveBleNewAlert = false;
+        if (liveBleMode == LiveBleMode::Flipper) playFlipperChirp();
+        else if (liveBleMode == LiveBleMode::Tesla) playTeslaChirp();
+        else playBLESuspiciousChirp();
+    }
+
+    const uint32_t now = millis();
+    const uint32_t sinceRefresh = now - liveBleLastUiRefreshMs;
+    if (sinceRefresh < 500 || (!liveBleResultsDirty && sinceRefresh < 1000)) return;
+    if (!liveBleResultsDirty) {
+        liveBleLastUiRefreshMs = now;
+        refreshLiveBleRowsInPlace();
+        return;
+    }
+    liveBleResultsDirty = false;
+    liveBleLastUiRefreshMs = now;
+
+    const int focusedIndex = liveBleRowIndex(focused, list);
+    lv_obj_t *persistentFocus = focusedIndex < 0 ? focused : nullptr;
+    switch (liveBleMode) {
+        case LiveBleMode::Generic: rebuildBLEScanList(); break;
+        case LiveBleMode::AirTag:
+            rebuildLiveFilteredList(airtagList, airtagBackBtn, airtagScanBtn, liveBleMode); break;
+        case LiveBleMode::Flipper:
+            rebuildLiveFilteredList(flipperList, flipperBackBtn, flipperScanBtn, liveBleMode); break;
+        case LiveBleMode::NyanBox: rebuildNyanBoxList(); break;
+        case LiveBleMode::Axon: rebuildAxonList(); break;
+        case LiveBleMode::Raven: rebuildRavenList(); break;
+        case LiveBleMode::Charger: rebuildSmartChargerList(); break;
+        case LiveBleMode::Tesla: rebuildTeslaList(); break;
+        case LiveBleMode::Skimmer:
+            rebuildLiveFilteredList(skimmerList, skimmerBackBtn, skimmerScanBtn, liveBleMode); break;
+        case LiveBleMode::Meta:
+            rebuildLiveFilteredList(metaList, metaBackBtn, metaScanBtn, liveBleMode); break;
+    }
+    scanRestoreControls();
+
+    if (persistentFocus && lv_obj_get_group(persistentFocus) == bleToolGroup) {
+        lv_group_focus_obj(persistentFocus);
+    } else {
+        lv_obj_t *row = liveBleFindRow(liveBleListForMode(), focusedIndex);
+        if (row) lv_group_focus_obj(row);
+    }
 }
 
 
@@ -14985,6 +16196,7 @@ static void cleanupForAutoReturnHome(lv_obj_t *activeScr) {
 }
 
 static void updateAutoReturnHome() {
+    if (scanSessionAttached()) return;
 #if AUTO_RETURN_HOME_TIMEOUT_MS > 0
     // A keyboard owns its return screen and group until its completion callback.
     // Home cleanup must not retire either one while editing/closing is in progress.
@@ -15024,6 +16236,10 @@ static void updateAutoReturnHome() {
 // ════════════════════════════════════════════════════════════════
 //  SETUP
 // ════════════════════════════════════════════════════════════════
+#if defined(ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST) && ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST
+#include "../tests/scan_session_device_test.h"
+#endif
+
 void setup() {
     boardEarlyInit();
     Serial.begin(115200);
@@ -15155,6 +16371,9 @@ void setup() {
 #endif
 
     Serial.println("[Rogue-Radar] Boot complete.");
+#if defined(ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST) && ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST
+    scanSessionDeviceTestBegin();
+#endif
     Serial.println("====================================");
     Serial.println();
 }
@@ -15175,6 +16394,10 @@ void loop() {
     performSoftwarePowerOff();
     processBackShortcut();
     processSignalTracker();
+    processScanSession();
+#if defined(ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST) && ROGUE_RADAR_SCAN_SESSION_DEVICE_TEST
+    scanSessionDeviceTestProcess();
+#endif
 
     // Keyboard OK/Back safety: finish after LVGL event handling and after
     // the encoder button has physically released.
@@ -15199,8 +16422,8 @@ void loop() {
     // hop delay. Flock modes can optionally use adaptive dwell, giving
     // channels 1/6/11 a longer listen window and other channels a quicker pass.
     static unsigned long lastHop = 0;
-    if (deauthActive || pwnActive || flockActive || hybridWifiActive) {
-        uint16_t hopMs = (flockActive || hybridWifiActive)
+    if (deauthActive || pwnActive || flockActive) {
+        uint16_t hopMs = flockActive
                        ? flockAdaptiveDwellMs(deauthChannel, deauthHopMs)
                        : deauthHopMs;
 

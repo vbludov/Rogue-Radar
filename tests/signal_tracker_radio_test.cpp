@@ -13,10 +13,13 @@
 
 uint32_t fakeMillis = 0;
 static uint32_t fakeScanDoneDelayMs = 2;
+static uint32_t fakeBleDoneDelayMs = 2;
+static uint32_t fakeBleStopWaitMs = 0;
 FakeWiFiClass WiFi;
 bool BLEDevice::initialized = false;
 static BLEScan fakeBleScan;
 BLEScan *BLEDevice::scan = &fakeBleScan;
+gap_event_handler BLEDevice::m_customGapHandler = nullptr;
 
 int16_t FakeWiFiClass::scanComplete() const {
     if (state == ScanState::Running) return WIFI_SCAN_RUNNING;
@@ -101,11 +104,18 @@ void FakeWiFiClass::deliverStoppedScanDone() {
     state = ScanState::Done;
 }
 int esp_wifi_scan_stop() { WiFi.driverStop(); return 0; }
-void fakeArduinoDelayHook(uint32_t) {
+void fakeArduinoDelayHook(uint32_t delayedMs) {
     // Model a scan-done event arriving asynchronously two milliseconds after
     // esp_wifi_scan_stop(), rather than before stop() returns.
     if (WiFi.stoppedEventPending && fakeMillis - WiFi.stoppedAtMs >= fakeScanDoneDelayMs) {
         WiFi.deliverStoppedScanDone();
+    }
+    if (fakeBleScan.stopPending) {
+        fakeBleStopWaitMs += delayedMs;
+        if (fakeBleStopWaitMs >= fakeBleDoneDelayMs) {
+            fakeBleScan.stopPending = false;
+            BLEDevice::emitScanStopComplete();
+        }
     }
 }
 
@@ -124,6 +134,8 @@ void check(bool condition, const std::string &message) {
 void resetFakes() {
     fakeMillis = 100;
     fakeScanDoneDelayMs = 2;
+    fakeBleDoneDelayMs = 2;
+    fakeBleStopWaitMs = 0;
     WiFi.reset();
     fakeBleScan = BLEScan();
     BLEDevice::initialized = false;
@@ -286,6 +298,42 @@ void testBleLifecycleUsesCallbackWithoutStoredResults() {
               fakeBleScan.window == 140,
           "BLE stop restores normal scanner settings");
 }
+
+void testBleReleaseWaitsForInquiryCompletion() {
+    resetFakes();
+    fakeBleDoneDelayMs = 1000;
+    SignalTrackerRadio radio;
+    check(radio.beginBle(kTarget), "BLE starts before delayed release test");
+    radio.stop();
+    check(!radio.readyToRelease(),
+          "BLE release remains pending before GAP stop acknowledgement");
+    check(std::strcmp(radio.status(), "BLE scan cleanup pending") == 0,
+          "pending BLE completion has actionable status");
+    check(!radio.beginBle(kTarget),
+          "BLE reentry cannot overwrite pending completion callback");
+    BLEDevice::emitScanStopComplete();
+    check(!radio.readyToRelease(), "first completed idle pass retains owner");
+    check(radio.readyToRelease(), "second completed idle pass releases owner");
+    check(radio.beginBle(kTarget), "BLE can restart after completion is consumed");
+    fakeBleDoneDelayMs = 2;
+    fakeBleStopWaitMs = 0;
+    radio.stop();
+}
+
+void testBleStopFailureRetainsOwnership() {
+    resetFakes();
+    fakeBleDoneDelayMs = 1000;
+    SignalTrackerRadio radio;
+    check(radio.beginBle(kTarget), "BLE starts before stop failure test");
+    radio.stop();
+    BLEDevice::emitScanStopComplete(1);
+    check(!radio.readyToRelease(), "failed BLE stop cannot release scanner");
+    check(std::strcmp(radio.status(), "BLE stop failed; restart required") == 0,
+          "failed BLE stop exposes restart-required status");
+    SignalTrackerRadio other;
+    check(!other.beginBle(kTarget),
+          "failed BLE stop prevents a new tracker owner");
+}
 }  // namespace
 
 int main() {
@@ -297,6 +345,8 @@ int main() {
     testReadyToReleaseGatesLegacyScanner();
     testLongDelayedCompletionQueuesReentry();
     testBleLifecycleUsesCallbackWithoutStoredResults();
+    testBleReleaseWaitsForInquiryCompletion();
+    testBleStopFailureRetainsOwnership();
     if (failures != 0) {
         std::cerr << failures << " of " << checks << " radio checks failed\n";
         return EXIT_FAILURE;

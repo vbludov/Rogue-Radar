@@ -1,6 +1,7 @@
 # Host regression tests
 
-Run the dependency-free C++11 model and radio lifecycle suites from the repository root:
+Run the dependency-free C++11 tracker model, radio lifecycle, and shared scan
+session suites from the repository root:
 
 ```sh
 sh tests/run_host_tests.sh
@@ -32,3 +33,23 @@ of the Connect-to-AP cancel allocation pattern with 30 AP rows: reusing the
 retained list must pass, while rebuilding a second list while the keyboard is
 retained must hit the 64 KB allocator assertion. This is not a build of the
 whole Arduino sketch, and exact byte counts can vary by host architecture.
+
+The same LVGL suite exercises `scan_session_ui.h` with delayed radio cleanup,
+timed expiry, continuous operation, Stop/Back, detail suspension and resume,
+held encoder navigation, failed-start recovery, and unexpected screen deletion.
+It also models deferred family-menu recreation after scan Back: the next tool
+may open only after the expected family menu is active and its screen animation
+has settled, rather than merely observing a detached session and no previous
+screen.
+The dependency-free suites also cover bounded alert de-duplication, paused
+session timing, and delayed BLE scan-completion events across radio handoffs.
+
+For an automated device lifecycle check, build the CC1101 profile with
+`-DROGUE_RADAR_SCAN_SESSION_DEVICE_TEST=1`. This enables
+`scan_session_device_test.h`, which visits all 20 supported scanner pages in
+timed and continuous modes, exercises detail/tracker handoffs and active Back,
+then runs 90-second BLE and Hybrid soaks. It prints `[ScanDiag]` status and
+memory metrics over serial. Mode overrides are transient and do not write
+saved preferences. Leave the controls untouched during the run, and restore
+the normal build afterward. This diagnostic checks lifecycle behavior, not
+the accuracy of every detector against known RF fixtures.

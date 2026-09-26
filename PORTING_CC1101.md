@@ -383,3 +383,64 @@ application was flashed with hash verification and booted as
 `v1.1.0-cc1101.9`; the board reported PMU identity `0x06` (BQ25896 with JEITA
 profile) and USB connected. Battery cutoff and physical wake are not yet
 confirmed.
+
+### Shared scan sessions (v1.1.0-cc1101.10)
+
+`scan_session_ui.h` owns the active scanner's controls, timing and navigation.
+Start, poll, stop, detail navigation and backend release run from `loop()`,
+outside LVGL input callbacks. Back retains the page until radio cleanup has
+completed. The top Back shortcut uses the same callback. A detail/Track Signal
+handoff suspends the session and preserves its remaining timed duration; the
+session resumes only when its owning scan page becomes active again.
+
+Per-tool mode preferences use the existing Preferences namespace. Opening a
+scanner creates an idle session and never starts the radio automatically.
+The footer's speaker and bulb controls share Alert Sound and Light Alert
+preferences with Misc Tools; the LED master preference remains in effect.
+Scan pages, including retained results, are exempt from idle return-home.
+Pocket Mode continues scanning with the display off and encoder locked.
+
+`scan_session_model.h` provides wrap-safe elapsed timing and a 128-entry alert
+cache. A match alerts on first observation, or after at least 30 seconds of
+absence and cooldown. Oldest unseen keys may be evicted when capacity is
+exceeded; rotating BLE addresses remain separate observed identities. Device
+lists are bounded and are not persistent logs.
+
+BLE rows update signal strength and age in place; new devices and evictions
+trigger batched structural rebuilds. Wi-Fi and BLE family menus are retired
+after returning home, while a scanner retains its own family menu for Back.
+These choices preserve transition headroom in LVGL's existing 64 KB pool.
+
+`continuous_ble_scan.h` uses advertised-device callbacks without retaining
+Arduino BLEScanResults. Detector callbacks copy observations into a bounded
+mailbox; main-loop processing updates results and LVGL. BLE stop must consume
+the stack's stop acknowledgement before permitting another radio owner.
+`ble_scan_stop_fence.h` shares the custom GAP hook between scanners and Track
+Signal, chains any existing hook, and keeps ownership on a failed stop while
+the UI reports that a restart is required. Natural expiry uses the inquiry
+completion callback; a queued manual stop still requires its own acknowledgement.
+The tracker follows the same contract in both handoff directions. Wi-Fi scanning
+retains ownership until Arduino's non-negative SCAN_DONE result is consumed;
+a negative timeout alone does not prove cleanup has completed.
+
+Timed scanning uses existing configured durations; continuous backends repeat
+sweeps or listen indefinitely. Flock Hybrid alternates configured BLE and
+Wi-Fi phases without concurrent radio ownership. Connect to AP, LAN Host
+Discovery, and Gateway Info retain their existing workflows.
+
+Validation: both PlatformIO board profiles compile. Host suites pass 224
+signal-model, 58 tracker-radio, 25 continuous-BLE and 38 session-model checks,
+plus the power-control tests. The pinned LVGL suite passes controller timing,
+delayed Stop/Back, timed/continuous detail resume, errors, screen deletion,
+keyboard regressions and 13 animation-readiness checks.
+
+On the USB-connected CC1101, the diagnostic passed all 20 scanner pages in
+timed and continuous modes, detail suspension/resume, real Wi-Fi/BLE Track
+Signal handoffs, active Back, Pocket Mode and forced inactivity timeout. It
+then completed 90-second BLE and Hybrid runs; BLE reached the 30-device cap,
+and Hybrid exited successfully during its Wi-Fi phase. Sampled minima were
+40,072 bytes of ESP heap and 18,004 bytes of LVGL free memory, with no panic,
+allocator failure or active-screen deletion warning. These are lifecycle
+checks using ambient signals, not detector-accuracy tests against fixtures.
+The normal application was then flashed with hash verification and booted as
+`RR v1.1.0-cc1101.10`; the diagnostic harness is excluded from that build.

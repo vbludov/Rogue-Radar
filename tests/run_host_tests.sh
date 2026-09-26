@@ -18,6 +18,17 @@ cxx=${CXX:-g++}
 "$tmp_dir/signal_tracker_radio_test"
 
 "$cxx" -std=c++11 -Wall -Wextra -Werror \
+    -I"$repo_root/tests/radio_stubs" \
+    "$repo_root/tests/continuous_ble_scan_test.cpp" \
+    -o "$tmp_dir/continuous_ble_scan_test"
+"$tmp_dir/continuous_ble_scan_test"
+
+"$cxx" -std=c++11 -Wall -Wextra -Werror \
+    "$repo_root/tests/scan_session_model_test.cpp" \
+    -o "$tmp_dir/scan_session_model_test"
+"$tmp_dir/scan_session_model_test"
+
+"$cxx" -std=c++11 -Wall -Wextra -Werror \
     "$repo_root/tests/cc1101_power_test.cpp" \
     -o "$tmp_dir/cc1101_power_test"
 "$tmp_dir/cc1101_power_test"

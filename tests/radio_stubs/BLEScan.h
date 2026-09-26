@@ -2,6 +2,8 @@
 #include "BLEAdvertisedDevice.h"
 #include <cstdint>
 
+class BLEScanResults {};
+
 class BLEScan {
 public:
     void clearResults() { ++clearCalls; }
@@ -14,13 +16,20 @@ public:
     void setActiveScan(bool active) { activeScan = active; }
     void setInterval(uint16_t value) { interval = value; }
     void setWindow(uint16_t value) { window = value; }
-    bool start(uint32_t duration, void (*)(int), bool) {
+    bool start(uint32_t duration, void (*complete)(BLEScanResults), bool) {
         ++startCalls;
         lastDuration = duration;
+        completionCallback = complete;
+        stopPending = false;
         running = startSucceeds;
         return startSucceeds;
     }
-    void stop() { ++stopCalls; running = false; }
+    void stop() { ++stopCalls; running = false; stopPending = true; }
+    void complete() {
+        running = false;
+        stopPending = false;
+        if (completionCallback) completionCallback(BLEScanResults{});
+    }
 
     BLEAdvertisedDeviceCallbacks *callbacks = nullptr;
     bool wantDuplicates = false;
@@ -28,6 +37,8 @@ public:
     bool activeScan = true;
     bool startSucceeds = true;
     bool running = false;
+    bool stopPending = false;
+    void (*completionCallback)(BLEScanResults) = nullptr;
     uint16_t interval = 0;
     uint16_t window = 0;
     uint32_t lastDuration = 0;

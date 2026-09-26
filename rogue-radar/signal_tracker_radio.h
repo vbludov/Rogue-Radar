@@ -8,6 +8,7 @@
 #include <BLEAdvertisedDevice.h>
 #include <ctype.h>
 #include <string.h>
+#include "ble_scan_stop_fence.h"
 
 // Owns the Arduino Wi-Fi or BLE scanner while signal tracking is active.
 // Call poll() regularly from the Arduino loop and stop() before leaving the
@@ -52,6 +53,10 @@ class SignalTrackerRadio {
 
   bool beginBle(const char *mac) {
     stop();
+    if (bleDrainPending_ && !drainBleScan(0)) {
+      status_ = "BLE scan cleanup pending";
+      return false;
+    }
     if (!parseMac(mac, targetMac_)) {
       status_ = "Invalid BLE address";
       return false;
@@ -66,9 +71,15 @@ class SignalTrackerRadio {
       status_ = "BLE scanner unavailable";
       return false;
     }
+    if (!BleScanStopFence::acquire(this)) {
+      bleScan_ = nullptr;
+      status_ = "BLE scanner busy";
+      return false;
+    }
 
     clearSample();
     mode_ = Mode::Ble;
+    bleIdlePasses_ = 0;
     setAcceptingBle(true);
     bleScan_->clearResults();
     bleScan_->setAdvertisedDeviceCallbacks(&bleCallbacks_, true, false);
@@ -79,6 +90,7 @@ class SignalTrackerRadio {
     if (!bleScan_->start(0, nullptr, false)) {
       setAcceptingBle(false);
       restoreBleScanner();
+      BleScanStopFence::release(this);
       mode_ = Mode::Idle;
       status_ = "BLE scan failed";
       return false;
@@ -153,32 +165,40 @@ class SignalTrackerRadio {
       cancelWifiScan();
     } else if (stoppingMode == Mode::Ble && bleScan_ != nullptr) {
       setAcceptingBle(false);
+      bleDrainPending_ = true;
+      bleIdlePasses_ = 0;
+      BleScanStopFence::requestStop(this);
       bleScan_->stop();
       // Detach the callback before waiting so no new callback can retain this
       // object's address. Existing callbacks only touch the RSSI mailbox.
       bleScan_->setAdvertisedDeviceCallbacks(nullptr, false, true);
       waitForBleCallbacks();
-      restoreBleScanner();
     }
 
     // esp_wifi_scan_stop() returns before Arduino's queued SCAN_DONE handler
     // clears WIFI_SCANNING_BIT/_scanStarted. Give that handler a short bounded
     // drain, but retain pending ownership if it has not arrived yet.
     if (wifiDrainPending_) drainWifiScan(kWifiStopDrainMs);
+    if (bleDrainPending_) drainBleScan(kBleDrainTimeoutMs);
 
     mode_ = Mode::Idle;
     preferredChannel_ = 0;
     focusedScans_ = 0;
     nextWifiScanMs_ = 0;
     clearSample();
-    status_ = wifiDrainPending_ ? "WiFi scan cleanup pending" : "Stopped";
+    status_ = wifiDrainPending_ ? "WiFi scan cleanup pending" :
+              bleDrainPending_ &&
+                      BleScanStopFence::stopResult(this) ==
+                          BleScanStopFence::StopResult::Failed
+                  ? "BLE stop failed; restart required" :
+              bleDrainPending_ ? "BLE scan cleanup pending" : "Stopped";
   }
 
   const char *status() { return status_; }
 
   // The UI must retain scanner ownership after stop until Arduino consumes
   // a late SCAN_DONE event. Legacy tools may then safely start their own scan.
-  bool readyToRelease() { return drainWifiScan(0); }
+  bool readyToRelease() { return drainWifiScan(0) && drainBleScan(0); }
 
  private:
   enum class Mode : uint8_t { Idle, Wifi, Ble };
@@ -337,6 +357,35 @@ class SignalTrackerRadio {
     }
   }
 
+  bool drainBleScan(uint32_t timeoutMs) {
+    if (!bleDrainPending_) return true;
+    const uint32_t deadline = millis() + timeoutMs;
+    do {
+      uint16_t active;
+      portENTER_CRITICAL(&mux_);
+      active = bleCallbacksActive_;
+      portEXIT_CRITICAL(&mux_);
+
+      const auto stopResult = BleScanStopFence::stopResult(this);
+      if (stopResult == BleScanStopFence::StopResult::Failed) {
+        status_ = "BLE stop failed; restart required";
+        return false;
+      }
+      bleIdlePasses_ = stopResult == BleScanStopFence::StopResult::Succeeded && active == 0
+          ? static_cast<uint8_t>(bleIdlePasses_ + 1) : 0;
+      if (bleIdlePasses_ >= 2) {
+        restoreBleScanner();
+        BleScanStopFence::release(this);
+        bleDrainPending_ = false;
+        bleIdlePasses_ = 0;
+        return true;
+      }
+      if (timeoutMs == 0 || timeReached(deadline)) break;
+      delay(1);
+    } while (true);
+    return false;
+  }
+
   void restoreBleScanner() {
     if (bleScan_ == nullptr) return;
     bleScan_->clearResults();
@@ -365,5 +414,7 @@ class SignalTrackerRadio {
   BLEScan *bleScan_ = nullptr;
   bool acceptingBle_ = false;
   uint16_t bleCallbacksActive_ = 0;
+  bool bleDrainPending_ = false;
+  uint8_t bleIdlePasses_ = 0;
   TrackerBleCallbacks bleCallbacks_;
 };

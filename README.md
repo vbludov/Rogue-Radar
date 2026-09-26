@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.10 | CC1101 test build | Adds Timed/Continuous scan sessions, Start/Stop, compact alert toggles, safe detail/tracker handoffs, and protection from inactivity timeout |
 | v1.1.0-cc1101.9 | CC1101 test build | Adds main-menu Power On/Off with confirmation, BQ25896 battery shutdown, USB guard, and power-on instructions |
 | v1.1.0-cc1101.8 | CC1101 test build | Protects keyboard editing from idle home cleanup, clears retired menu references, and fixes stale transition state when opening the keyboard |
 | v1.1.0-cc1101.7 | CC1101 test build | Fixes Connect to AP keyboard cancellation by reusing the AP list; protects deferred screen cleanup during transitions |
@@ -32,7 +33,7 @@
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
 >
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.9` — hardware testing in progress.
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.10` — automated lifecycle tests passed on the CC1101 device.
 ---
 
 ## Overview
@@ -349,3 +350,32 @@ Rogue Radar would not be possible without the work and inspiration from these pr
 - **0xXyc / flock-you-wifi-recon**  
   Credit to 0xXyc for the flock-you-wifi-recon project, which helped inspire Rogue Radar’s expanded Flock detection improvements, including Flock-related MAC/OUI matching, confidence labels, method labels, BLE manufacturer ID checks, and improved Flock Hybrid detail handling. This project is also helping guide the upcoming Raven Detector feature planned for Rogue Radar.  
   https://github.com/0xXyc/flock-you-wifi-recon
+
+## Timed and Continuous scanning
+
+Supported scanner pages have a compact **Timed / Continuous** mode selector,
+**Start / Stop**, and speaker/lightbulb alert toggles. Mode is remembered per
+tool; opening a page does not automatically start scanning. Timed sessions
+use the configured scan duration (Flock Hybrid uses the sum of its BLE and
+Wi-Fi phase durations). Continuous sessions run until Stop or Back.
+
+This applies to Network Scanner, Station Scanner, Deauth Detector, Channel
+Analyzer, Packet Monitor, WiFi Mapper, PineAP Hunter, Pwnagotchi Watch, Flock
+Detector, Flock Hybrid, and all ten BLE scanner/detector pages. Connect to AP,
+LAN Host Discovery, and Gateway Info keep their existing workflows.
+
+Stop retains results. Back stops and releases the radio before leaving.
+Opening a result suspends the session; returning from the detail
+page resumes it. Track Signal uses this same handoff, so it owns the radio
+until you return. Timed sessions preserve their remaining scan time during this pause. Results are bounded in memory; they are not a permanent encounter log.
+
+The speaker and lightbulb buttons change the existing saved **Alert Sound**
+and **Light Alert** preferences. A crossed icon means disabled. The global
+LED master switch still applies. Matching repeat sightings are suppressed
+until the device has been absent for at least 30 seconds and its alert
+cooldown has elapsed; a bounded alert cache can forget older devices.
+
+Active sessions continue in Pocket Mode and are protected from automatic
+return-home. Pocket Mode keeps monitoring and configured alerts running;
+this differs from deep sleep or full shutdown. Flock Hybrid alternates BLE
+and Wi-Fi phases, so it does not listen to both radios simultaneously.
