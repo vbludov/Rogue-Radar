@@ -74,6 +74,10 @@ check: repeatedly open Network Scanner, return with Back, and reopen it;
 also switch between different Wi-Fi tools. This addresses the captured crash,
 not every possible stability issue.
 
+After flashing the fix, the user confirmed repeated Network Scanner entry
+and Back navigation work. A subsequent 45-second serial capture contained
+no new crash output. Other tool combinations still need longer testing.
+
 When packaging a merged image, preserve the generated bootloader's **DIO**
 header. Do not force `--flash_mode qio` in `merge_bin` or `write_flash`.
 PlatformIO intentionally uses DIO for the boot image even though the build
