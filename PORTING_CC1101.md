@@ -255,8 +255,13 @@ audio, and the chart still require device testing; host radio tests use stubs.
 Hardware validation: select a result other than the first and verify its address;
 walk closer/farther; test both icon toggles, saved volume, loss/reacquisition,
 Pocket Mode, and repeated Back/re-entry followed by a normal rescan for Wi-Fi,
-BLE and AirTag lists. Nearby Signals (ranked list, sparklines, rising indicators,
-and entry into this tracker) remains the next planned feature.
+BLE and AirTag lists.
+
+The next planned feature is **Saved Devices — Find and Track Known Devices**:
+name and save known Wi-Fi/BLE targets, then reopen them later to find and locate
+them using the existing tracker. **Nearby Signals** follows, adding a ranked
+discovery list with history charts, trend indicators, and save/track actions.
+Both are planned, not yet implemented; see [FEATURE_PLAN.md](FEATURE_PLAN.md).
 
 ### General hardware checks
 
