@@ -109,7 +109,7 @@
 
 // ─── Battery Meter ──────────────────────────────────────────────
 // The original T-Embed uses its GPIO4 ADC path. The CC1101 board meter remains
-// disabled until its BQ25896 I2C path is integrated.
+// disabled until its BQ27220 fuel-gauge I2C path is integrated.
 #define BATTERY_METER_ENABLED       RR_HAS_BATTERY_METER
 #define BATTERY_ADC_RESOLUTION   4095.0f
 #define BATTERY_ADC_REF_VOLTAGE     3.30f
