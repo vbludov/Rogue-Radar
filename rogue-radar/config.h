@@ -5,12 +5,14 @@
 // ============================================================
 #pragma once
 
+#include "board_config.h"
+
 // ─── Device Name / Firmware Version ─────────────────────────────
 #define DEVICE_NAME       "Rogue Radar"
 #define FIRMWARE_VERSION  "RR v1.0.5"
 
 // ─── Device Type ─────────────────────────────
-#define DEVICE_TYPE       "T-Embed Non CC1101"
+#define DEVICE_TYPE       RR_BOARD_NAME
 
 // ─── Splash Screen ──────────────────────────────────────────────
 #define SPLASH_DURATION_MS  2600
@@ -32,17 +34,7 @@
 #define PERSISTENT_SETTINGS_ENABLED  1
 #define PREFS_NAMESPACE             "rogueradar"
 
-// ─── Pin Definitions ────────────────────────────────────────────
-#define POWER_PIN       46
-#define ENCODER_A        1
-#define ENCODER_B        2
-#define ENCODER_BTN      0
-#define APA102_DI       42
-#define APA102_CLK      45
-#define NUM_LEDS         7
-
 // ─── LCD Backlight (LEDC PWM) ───────────────────────────────────
-#define LCD_BL_PIN      15    // IO15 = TFT backlight
 #define LCD_BL_CH        0    // LEDC channel (0-7, must be free)
 #define LCD_BL_FREQ   5000    // Hz — above audible range
 #define LCD_BL_RES       8    // bits (0-255 range)
@@ -88,9 +80,6 @@
 // 1 = alert chirps enabled | 0 = alert chirps disabled.
 // I2S is lazy-initialized on first chirp, then shut down after each chirp.
 #define SOUND_ENABLED_DEFAULT      1
-#define SOUND_I2S_BCLK            7
-#define SOUND_I2S_WCLK            5
-#define SOUND_I2S_DOUT            6
 #define SOUND_SAMPLE_RATE         16000
 #define SOUND_VOLUME_PERCENT      35   // 0-100 default for detection alert chirps
 #define SOUND_VOLUME_MIN_PERCENT   0
@@ -119,11 +108,9 @@
 #define AUTO_RETURN_HOME_TIMEOUT_MS  120000  // 2 minutes
 
 // ─── Battery Meter ──────────────────────────────────────────────
-// T-Embed LiPo battery monitor. GPIO4 is the expected ADC battery pin.
-// If your board revision uses a different ADC pin, change BATTERY_ADC_PIN here.
-// Note: GPIO1 is used by the encoder in this sketch, so test carefully before using 1.
-#define BATTERY_METER_ENABLED       1
-#define BATTERY_ADC_PIN             4
+// The original T-Embed uses its GPIO4 ADC path. The CC1101 board meter remains
+// disabled until its BQ25896 I2C path is integrated.
+#define BATTERY_METER_ENABLED       RR_HAS_BATTERY_METER
 #define BATTERY_ADC_RESOLUTION   4095.0f
 #define BATTERY_ADC_REF_VOLTAGE     3.30f
 #define BATTERY_DIVIDER_RATIO       2.12f
@@ -134,25 +121,19 @@
 #define BATTERY_AVG_SAMPLES         8
 
 // ─── GPS ────────────────────────────────────────────────────────
-#define GPS_RX_PIN  44
-#define GPS_TX_PIN  43
 #define GPS_BAUD  9600
 
 // ─── Audio Tools / Sound Recorder ──────────────────────────────
 // First-pass record/playback tool for the T-Embed ES7210 microphone.
 // Mic pins are from the T-Embed pinout image: ES_BCLK=IO47, ES_LRCK=IO21,
 // ES_DIN=IO14, ES_MCLK=IO48. Speaker playback reuses SOUND_I2S_* pins.
-#define AUDIO_TOOLS_ENABLED                 1
-#define AUDIO_RECORDER_MIC_BCLK           47
-#define AUDIO_RECORDER_MIC_LRCK           21
-#define AUDIO_RECORDER_MIC_DIN            14
-#define AUDIO_RECORDER_MIC_MCLK           48
+#define AUDIO_TOOLS_ENABLED                 RR_HAS_RECORDER
 
 // ES7210 control bus. LilyGO's official T-Embed mic example uses SDA=IO18 and SCL=IO8.
 // The ES7210 must be configured over I2C before useful mic audio appears on I2S.
 #define AUDIO_RECORDER_USE_ES7210_I2C       1
-#define AUDIO_RECORDER_I2C_SDA             18
-#define AUDIO_RECORDER_I2C_SCL              8
+#define AUDIO_RECORDER_I2C_SDA             RR_I2C_SDA
+#define AUDIO_RECORDER_I2C_SCL             RR_I2C_SCL
 #define AUDIO_RECORDER_ES7210_ADDR       0x40
 
 // ES7210 mic gain values use the same scale as LilyGO's mic example.
@@ -200,11 +181,8 @@
 #define AUDIO_RECORD_SD_ROOT_FALLBACK     1
 #define AUDIO_RECORD_SD_DEBUG_STATUS      1
 
-// ─── SD Card (HSPI — separate bus from TFT) ─────────────────────
-#define SD_CS    39
-#define SD_SCLK  40
-#define SD_MISO  38
-#define SD_MOSI  41
+// ─── SD Card ────────────────────────────────────────────────────
+// Pin assignments and shared/dedicated bus selection live in board_config.h.
 
 // ─── SD OTA ─────────────────────────────────────────────────────
 #define OTA_FILENAME  "/update.bin"
@@ -694,5 +672,3 @@ static const char* FLIPPER_NAME_MATCHES[FLIPPER_NAME_MATCH_COUNT] = {
     0x9900ff, 0xff00ff, 0xffcc00, \
     0x330033, 0x660066, 0x00ff66, \
     0x220022, 0x440044, 0x00cc33
-
-    
