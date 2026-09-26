@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.4 | CC1101 test build | Adds Wi-Fi/BLE Track Signal with 30-second live chart, strength ring, optional guidance audio, compact mute/light toggles, and selectable AirTag results |
 | v1.1.0-cc1101.3 | CC1101 test build | Adds Pocket Mode: display off, encoder locked, monitoring and selected alerts continue; top-button wake |
 | v1.1.0-cc1101.2 | CC1101 test build | Adds saved Light Alert toggle: red ring flash and chase on detection alerts, independent of sound; restores existing lighting afterward |
 | v1.1.0-cc1101.1 | CC1101 test build | Adds T-Embed CC1101 board support and top-button Back shortcut (GPIO6), including keyboard cancel; fixes Wi-Fi tool re-entry crash; preserves the original T-Embed build |
@@ -26,7 +27,7 @@
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
 >
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.3` — hardware testing in progress.
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.4` — hardware testing in progress.
 ---
 
 ## Overview

@@ -198,6 +198,50 @@ OFF and Light Alert ON, repeat with sound ON, check OFF suppresses the effect,
 and verify persistence after reboot and normal lighting restoration. Check
 the master LEDs toggle and dimmed brightness during an alert as well.
 
+### Track Signal (v1.1.0-cc1101.4)
+
+Open a Network Scanner or BLE Scanner result, then select **Track Signal**.
+AirTag Detector results are now selectable and lead to the same BLE detail and
+tracking view; Flipper results already use that detail view. Tracking follows
+the chosen Wi-Fi BSSID or BLE address, never a shared SSID/name. A BLE device
+that rotates its address must be scanned and selected again.
+
+The screen shows the target identity, live RSSI, recent strength trend, and a
+30-second chart: muted raw readings and a brighter smoothed average, with a
+fixed -100 to -30 dBm scale. Missing 500 ms buckets are gaps. After three seconds
+without a reading, it shows signal lost and stops the meter/beeps; reacquisition
+resets smoothing and builds a fresh trend. Signal strength is not distance or
+direction, and reflections/antenna orientation can affect it.
+
+The encoder ring fills blue through yellow to green as the smoothed signal
+strengthens. Compact speaker and lightbulb buttons toggle guidance audio and
+the tracking ring independently; a diagonal slash means disabled. Their enabled
+state and audio volume are saved. Audio starts muted and light starts enabled.
+Volume cycles 10–50% in 10% steps. Stronger signals beep faster and at a higher
+pitch. These settings do not change detection alert or menu-sound preferences.
+The master LEDs switch/dimming still apply; red detection overlays retain priority.
+
+Radio sampling is asynchronous and passive. Wi-Fi uses the target channel plus
+periodic all-channel sweeps; it does not intentionally disconnect an existing
+connection. BLE receives advertisements continuously without connecting. Tracking
+owns the selected scanner until Back stops it and returns to the target's detail
+screen. Back waits on "Stopping scan..." if a canceled Wi-Fi scan still has a
+completion event pending, so a subsequent regular scan cannot inherit its results.
+The idle return-home timer is suspended while tracking. In Pocket Mode,
+sampling/chart history and enabled audio continue, normal tracking LEDs stay
+dark, and the top button wakes the same view.
+
+Validation: original and CC1101 builds pass, as do 224 signal-model and 47 radio
+lifecycle host checks. CI runs these tests. The flashed CC1101 application passed
+hash verification and booted as v1.1.0-cc1101.4. Live RF behavior, icon readability,
+audio, and the chart still require device testing; host radio tests use stubs.
+
+Hardware validation: select a result other than the first and verify its address;
+walk closer/farther; test both icon toggles, saved volume, loss/reacquisition,
+Pocket Mode, and repeated Back/re-entry followed by a normal rescan for Wi-Fi,
+BLE and AirTag lists. Nearby Signals (ranked list, sparklines, rising indicators,
+and entry into this tracker) remains the next planned feature.
+
 ### General hardware checks
 
 1. Confirm the boot log reports the intended board profile, 16 MB flash,

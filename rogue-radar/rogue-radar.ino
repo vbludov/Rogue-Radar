@@ -252,6 +252,7 @@ static int            lcdBrightness     = LCD_BL_DEFAULT;
 // Safe first step for sleep-timer behavior: no ESP32 sleep modes yet.
 // We only dim the TFT backlight and APA102 LED brightness after no
 // encoder/button activity.
+static bool signalTrackerActive = false;
 static bool pocketModeActive = false;
 static bool encoderReleaseRequired = false;
 static uint32_t encoderReleasedAt = 0;
@@ -944,6 +945,8 @@ static int               chargerEntryCount = 0;
 // ════════════════════════════════════════════════════════════════
 void createMainMenu();
 void createWiFiMenu();
+static void createSignalTracker(bool isBle, const char *name, const char *mac, uint8_t channel);
+static void processSignalTracker();
 void createNetworkScanner();
 void createNetworkDetail(int idx);
 void createConnectAPTool();
@@ -2065,7 +2068,7 @@ static lv_obj_t *createBackBtn(lv_obj_t *parent, lv_event_cb_t cb) {
 
 static lv_obj_t *createActionBtn(lv_obj_t *parent,
                                   const char *label,
-                                  lv_event_cb_t cb) {
+                                  lv_event_cb_t cb, void *userData = nullptr) {
     lv_obj_t *btn = lv_btn_create(parent);
     lv_obj_set_size(btn, 110, 26);
     lv_obj_align(btn, LV_ALIGN_BOTTOM_RIGHT, -6, -4);
@@ -2075,7 +2078,7 @@ static lv_obj_t *createActionBtn(lv_obj_t *parent,
     lv_obj_set_style_border_color(btn, TC(actionBdr), LV_PART_MAIN);
     lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
     lv_obj_set_style_radius(btn, 5, LV_PART_MAIN);
-    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, userData);
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, label);
     lv_obj_set_style_text_color(lbl, TC(text), LV_PART_MAIN);
@@ -6869,10 +6872,16 @@ void createNetworkDetail(int idx) {
 
     lv_obj_t *backBtn = createBackBtn(wifiDetailScreen, cb_wifiDetailBack);
 
+    lv_obj_t *trackBtn = createActionBtn(wifiDetailScreen, "Track Signal", [](lv_event_t *e) {
+        const int selected = (int)(intptr_t)lv_event_get_user_data(e);
+        createSignalTracker(false, wifiEntries[selected].ssid, wifiEntries[selected].bssid, wifiEntries[selected].channel);
+    }, (void *)(intptr_t)idx);
+
     deleteGroup(&wifiDetailGroup);
     wifiDetailGroup = lv_group_create();
     lv_group_add_obj(wifiDetailGroup, card);     // Focus card first so encoder can scroll Station Detail.
     lv_group_add_obj(wifiDetailGroup, backBtn);
+    lv_group_add_obj(wifiDetailGroup, trackBtn);
     setGroup(wifiDetailGroup);
 
     lv_screen_load_anim(wifiDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -12854,10 +12863,16 @@ void createBLEDetail(int idx) {
 
     lv_obj_t *backBtn = createBackBtn(bleDetailScreen, cb_bleDetailBack);
 
+    lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
+        const int selected = (int)(intptr_t)lv_event_get_user_data(e);
+        createSignalTracker(true, bleEntries[selected].name, bleEntries[selected].mac, 0);
+    }, (void *)(intptr_t)idx);
+
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
     lv_group_add_obj(bleDetailGroup, card);
     lv_group_add_obj(bleDetailGroup, backBtn);
+    lv_group_add_obj(bleDetailGroup, trackBtn);
     lv_group_focus_obj(card);
     setGroup(bleDetailGroup);
 
@@ -12869,10 +12884,17 @@ void createBLEDetail(int idx) {
 // ════════════════════════════════════════════════════════════════
 static lv_obj_t *airtagStatusLbl = nullptr;
 static lv_obj_t *airtagList      = nullptr;
+static lv_obj_t *airtagBackBtn = nullptr;
+static lv_obj_t *airtagScanBtn = nullptr;
 
 static void cb_doAirTagScan(lv_event_t *e) {
     lv_label_set_text(airtagStatusLbl, LV_SYMBOL_REFRESH "  Scanning 8s...");
     lv_obj_set_style_text_color(airtagStatusLbl, lv_color_hex(TH.warn), LV_PART_MAIN);
+    deleteGroup(&bleToolGroup);
+    bleToolGroup = lv_group_create();
+    lv_group_add_obj(bleToolGroup, airtagBackBtn);
+    lv_group_add_obj(bleToolGroup, airtagScanBtn);
+    setGroup(bleToolGroup);
     lv_obj_clean(airtagList);
     lv_timer_handler();
 
@@ -12904,9 +12926,12 @@ static void cb_doAirTagScan(lv_event_t *e) {
         char row[52];
         snprintf(row, sizeof(row), "%s  %ddBm",
                  bleEntries[i].mac, bleEntries[i].rssi);
-        lv_obj_t *entry = lv_list_add_text(airtagList, row);
-        if (entry)
-            lv_obj_set_style_text_color(entry, lv_color_hex(0xf0f0f0), LV_PART_MAIN);
+        lv_obj_t *entry = lv_list_add_btn(airtagList, nullptr, row);
+        styleListBtn(entry);
+        lv_obj_add_event_cb(entry, [](lv_event_t *e) {
+            createBLEDetail((int)(intptr_t)lv_event_get_user_data(e));
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_group_add_obj(bleToolGroup, entry);
     }
 }
 
@@ -12936,6 +12961,8 @@ void createAirTagScanner() {
                                         LV_SYMBOL_REFRESH "  Scan",
                                         cb_doAirTagScan);
 
+    airtagBackBtn = backBtn;
+    airtagScanBtn = scanBtn;
     deleteGroup(&bleToolGroup);
     bleToolGroup = lv_group_create();
     lv_group_add_obj(bleToolGroup, backBtn);
@@ -14772,6 +14799,8 @@ void createMetaDetector() {
 // ════════════════════════════════════════════════════════════════
 //  AUTO-RETURN HOME
 // ════════════════════════════════════════════════════════════════
+#include "signal_tracker_ui.h"
+
 static void deleteIfInactiveScreen(lv_obj_t *&scr, lv_obj_t *activeScr) {
     // Only delete screens that are not currently active. The active screen is
     // handled by lv_screen_load_anim(..., auto_del=true) when returning home.
@@ -14852,7 +14881,7 @@ static void cleanupForAutoReturnHome(lv_obj_t *activeScr) {
 
 static void updateAutoReturnHome() {
 #if AUTO_RETURN_HOME_TIMEOUT_MS > 0
-    if (pocketModeActive || powerOffTriggered || !mainScreen) return;
+    if (signalTrackerActive || pocketModeActive || powerOffTriggered || !mainScreen) return;
 #if RR_BACK_BUTTON_PIN >= 0
     // Do not tear down a monitor while the user is holding/releasing the
     // Pocket Mode gesture, including its stable-release debounce interval.
@@ -15016,6 +15045,7 @@ void loop() {
     lv_timer_handler();
 
     processBackShortcut();
+    processSignalTracker();
 
     // Keyboard OK/Back safety: finish after LVGL event handling and after
     // the encoder button has physically released.
