@@ -206,6 +206,15 @@ tracking view; Flipper results already use that detail view. Tracking follows
 the chosen Wi-Fi BSSID or BLE address, never a shared SSID/name. A BLE device
 that rotates its address must be scanned and selected again.
 
+As of v1.1.0-cc1101.6, all BLE menu modes expose Track Signal from a selected
+result's detail screen: BLE Scanner, AirTag, Flipper, nyanBOX, Axon, Raven,
+Smart Charger, Tesla, Skimmer, and Meta. nyanBOX/Axon retain their separate
+legacy Locate actions. Skimmer/Meta results are now selectable; rescanning rebuilds
+their encoder focus groups before replacing the old results. Tracker Back returns
+to the same detector detail, then its existing Back action returns to its list.
+Target-specific RF behavior still requires testing with matching advertisers.
+Both board builds and CC1101 flash/boot verification passed for v1.1.0-cc1101.6.
+
 The screen shows the target identity, live RSSI, recent strength trend, and a
 30-second chart: muted raw readings and a brighter smoothed average, with a
 fixed -100 to -30 dBm scale. Missing 500 ms buckets are gaps. After three seconds

@@ -12754,6 +12754,7 @@ void createBLEScanner() {
 //  BLE DEVICE DETAIL SCREEN
 // ════════════════════════════════════════════════════════════════
 void createBLEDetail(int idx) {
+    if (idx < 0 || idx >= bleEntryCount) return;
     if (bleDetailScreen) { lv_obj_delete(bleDetailScreen); bleDetailScreen = nullptr; }
     bleDetailScreen = lv_obj_create(nullptr);
     applyScreenStyle(bleDetailScreen);
@@ -13281,10 +13282,25 @@ void createNyanBoxDetail(int idx) {
                                           LV_SYMBOL_EYE_OPEN "  Locate",
                                           cb_nyanLocate);
 
+    lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
+        const int selected = (int)(intptr_t)lv_event_get_user_data(e);
+        if (selected < 0 || selected >= nyanEntryCount) return;
+        createSignalTracker(true, nyanEntries[selected].name, nyanEntries[selected].mac, 0);
+    }, (void *)(intptr_t)idx);
+    // Keep all three actions visible and independently encoder-selectable.
+    lv_obj_set_width(backBtn, 86);
+    lv_obj_set_width(locateBtn, 92);
+    lv_obj_align(locateBtn, LV_ALIGN_BOTTOM_LEFT, 98, -4);
+    lv_obj_set_width(trackBtn, 118);
+    lv_obj_set_style_pad_all(backBtn, 2, 0);
+    lv_obj_set_style_pad_all(locateBtn, 2, 0);
+    lv_obj_set_style_pad_all(trackBtn, 2, 0);
+
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, locateBtn);
+    lv_group_add_obj(bleDetailGroup, trackBtn);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -13589,10 +13605,25 @@ void createAxonDetail(int idx) {
                                           LV_SYMBOL_EYE_OPEN "  Locate",
                                           cb_axonLocate);
 
+    lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
+        const int selected = (int)(intptr_t)lv_event_get_user_data(e);
+        if (selected < 0 || selected >= axonEntryCount) return;
+        createSignalTracker(true, axonEntries[selected].name, axonEntries[selected].mac, 0);
+    }, (void *)(intptr_t)idx);
+    // Keep all three actions visible and independently encoder-selectable.
+    lv_obj_set_width(backBtn, 86);
+    lv_obj_set_width(locateBtn, 92);
+    lv_obj_align(locateBtn, LV_ALIGN_BOTTOM_LEFT, 98, -4);
+    lv_obj_set_width(trackBtn, 118);
+    lv_obj_set_style_pad_all(backBtn, 2, 0);
+    lv_obj_set_style_pad_all(locateBtn, 2, 0);
+    lv_obj_set_style_pad_all(trackBtn, 2, 0);
+
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
     lv_group_add_obj(bleDetailGroup, backBtn);
     lv_group_add_obj(bleDetailGroup, locateBtn);
+    lv_group_add_obj(bleDetailGroup, trackBtn);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -13986,9 +14017,16 @@ void createRavenDetail(int idx) {
 
     lv_obj_t *backBtn = createBackBtn(bleDetailScreen, cb_ravenDetailBack);
 
+    lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
+        const int selected = (int)(intptr_t)lv_event_get_user_data(e);
+        if (selected < 0 || selected >= ravenEntryCount) return;
+        createSignalTracker(true, ravenEntries[selected].name, ravenEntries[selected].mac, 0);
+    }, (void *)(intptr_t)idx);
+
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
     lv_group_add_obj(bleDetailGroup, backBtn);
+    lv_group_add_obj(bleDetailGroup, trackBtn);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -14302,6 +14340,12 @@ void createSmartChargerDetail(int idx) {
 
     lv_obj_t *backBtn = createBackBtn(bleDetailScreen, cb_smartChargerDetailBack);
 
+    lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
+        const int selected = (int)(intptr_t)lv_event_get_user_data(e);
+        if (selected < 0 || selected >= chargerEntryCount) return;
+        createSignalTracker(true, chargerEntries[selected].name, chargerEntries[selected].mac, 0);
+    }, (void *)(intptr_t)idx);
+
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
 
@@ -14310,6 +14354,7 @@ void createSmartChargerDetail(int idx) {
     // detail pages and gives the card its focused border/highlight.
     lv_group_add_obj(bleDetailGroup, card);
     lv_group_add_obj(bleDetailGroup, backBtn);
+    lv_group_add_obj(bleDetailGroup, trackBtn);
     setGroup(bleDetailGroup);
     lv_group_focus_obj(card);
 
@@ -14590,9 +14635,16 @@ void createTeslaDetail(int idx) {
 
     lv_obj_t *backBtn = createBackBtn(bleDetailScreen, cb_teslaDetailBack);
 
+    lv_obj_t *trackBtn = createActionBtn(bleDetailScreen, "Track Signal", [](lv_event_t *e) {
+        const int selected = (int)(intptr_t)lv_event_get_user_data(e);
+        if (selected < 0 || selected >= teslaEntryCount) return;
+        createSignalTracker(true, teslaEntries[selected].name, teslaEntries[selected].mac, 0);
+    }, (void *)(intptr_t)idx);
+
     deleteGroup(&bleDetailGroup);
     bleDetailGroup = lv_group_create();
     lv_group_add_obj(bleDetailGroup, backBtn);
+    lv_group_add_obj(bleDetailGroup, trackBtn);
     setGroup(bleDetailGroup);
 
     lv_screen_load_anim(bleDetailScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
@@ -14609,10 +14661,18 @@ void createTeslaDetail(int idx) {
 // ════════════════════════════════════════════════════════════════
 static lv_obj_t *skimmerStatusLbl = nullptr;
 static lv_obj_t *skimmerList      = nullptr;
+static lv_obj_t *skimmerBackBtn = nullptr;
+static lv_obj_t *skimmerScanBtn = nullptr;
 
 static void cb_doSkimmerScan(lv_event_t *e) {
     lv_label_set_text(skimmerStatusLbl, LV_SYMBOL_REFRESH "  Scanning 8s...");
     lv_obj_set_style_text_color(skimmerStatusLbl, lv_color_hex(TH.warn), LV_PART_MAIN);
+    // Rebuild focus before deleting the previous selectable results.
+    deleteGroup(&bleToolGroup);
+    bleToolGroup = lv_group_create();
+    lv_group_add_obj(bleToolGroup, skimmerBackBtn);
+    lv_group_add_obj(bleToolGroup, skimmerScanBtn);
+    setGroup(bleToolGroup);
     lv_obj_clean(skimmerList);
     lv_timer_handler();
 
@@ -14650,10 +14710,13 @@ static void cb_doSkimmerScan(lv_event_t *e) {
                  bleEntries[i].name,
                  bleEntries[i].mac,
                  bleEntries[i].rssi);
-        lv_obj_t *entry = lv_list_add_text(skimmerList, row);
-        if (entry)
-            lv_obj_set_style_text_color(entry,
-                lv_color_hex(TH.alert), LV_PART_MAIN);
+        lv_obj_t *entry = lv_list_add_btn(skimmerList, nullptr, row);
+        styleListBtn(entry);
+        lv_obj_set_style_text_color(entry, lv_color_hex(TH.alert), LV_PART_MAIN);
+        lv_obj_add_event_cb(entry, [](lv_event_t *e) {
+            createBLEDetail((int)(intptr_t)lv_event_get_user_data(e));
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_group_add_obj(bleToolGroup, entry);
     }
 }
 
@@ -14688,6 +14751,8 @@ void createSkimmerScanner() {
                                         LV_SYMBOL_REFRESH "  Scan",
                                         cb_doSkimmerScan);
 
+    skimmerBackBtn = backBtn;
+    skimmerScanBtn = scanBtn;
     deleteGroup(&bleToolGroup);
     bleToolGroup = lv_group_create();
     lv_group_add_obj(bleToolGroup, backBtn);
@@ -14710,10 +14775,18 @@ void createSkimmerScanner() {
 // ════════════════════════════════════════════════════════════════
 static lv_obj_t *metaStatusLbl = nullptr;
 static lv_obj_t *metaList      = nullptr;
+static lv_obj_t *metaBackBtn = nullptr;
+static lv_obj_t *metaScanBtn = nullptr;
 
 static void cb_doMetaScan(lv_event_t *e) {
     lv_label_set_text(metaStatusLbl, LV_SYMBOL_REFRESH "  Scanning 8s...");
     lv_obj_set_style_text_color(metaStatusLbl, lv_color_hex(TH.warn), LV_PART_MAIN);
+    // Rebuild focus before deleting the previous selectable results.
+    deleteGroup(&bleToolGroup);
+    bleToolGroup = lv_group_create();
+    lv_group_add_obj(bleToolGroup, metaBackBtn);
+    lv_group_add_obj(bleToolGroup, metaScanBtn);
+    setGroup(bleToolGroup);
     lv_obj_clean(metaList);
     lv_timer_handler();
 
@@ -14749,10 +14822,13 @@ static void cb_doMetaScan(lv_event_t *e) {
                  bleEntries[i].name[0] ? bleEntries[i].name : "<unknown>",
                  bleEntries[i].mac,
                  bleEntries[i].rssi);
-        lv_obj_t *entry = lv_list_add_text(metaList, row);
-        if (entry)
-            lv_obj_set_style_text_color(entry,
-                lv_color_hex(TH.accent), LV_PART_MAIN);
+        lv_obj_t *entry = lv_list_add_btn(metaList, nullptr, row);
+        styleListBtn(entry);
+        lv_obj_set_style_text_color(entry, lv_color_hex(TH.accent), LV_PART_MAIN);
+        lv_obj_add_event_cb(entry, [](lv_event_t *e) {
+            createBLEDetail((int)(intptr_t)lv_event_get_user_data(e));
+        }, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_group_add_obj(bleToolGroup, entry);
     }
 }
 
@@ -14786,6 +14862,8 @@ void createMetaDetector() {
                                         LV_SYMBOL_REFRESH "  Scan",
                                         cb_doMetaScan);
 
+    metaBackBtn = backBtn;
+    metaScanBtn = scanBtn;
     deleteGroup(&bleToolGroup);
     bleToolGroup = lv_group_create();
     lv_group_add_obj(bleToolGroup, backBtn);

@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.6 | CC1101 test build | Adds direct Track Signal access to nyanBOX, Axon, Raven, Smart Charger, Tesla, Skimmer, and Meta detector results |
 | v1.1.0-cc1101.5 | CC1101 test build | Enlarges Track Signal history chart by 39%; places RSSI beside history and removes the separate status row |
 | v1.1.0-cc1101.4 | CC1101 test build | Adds Wi-Fi/BLE Track Signal with 30-second live chart, strength ring, optional guidance audio, compact mute/light toggles, and selectable AirTag results |
 | v1.1.0-cc1101.3 | CC1101 test build | Adds Pocket Mode: display off, encoder locked, monitoring and selected alerts continue; top-button wake |
@@ -28,7 +29,7 @@
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
 >
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.5` — hardware testing in progress.
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.6` — hardware testing in progress.
 ---
 
 ## Overview
