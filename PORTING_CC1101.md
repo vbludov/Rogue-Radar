@@ -56,6 +56,23 @@ log and the checklist below.
 
 ## CC1101 hardware differences
 
+### Initial USB boot test
+
+The initial CC1101 build has been flashed to an ESP32-S3 unit with 16 MB
+flash and 8 MB PSRAM. Flash writes passed esptool hash verification, and the
+serial log reached `Boot complete` without a reset during a 25-second capture.
+Display, encoder, radio scans, and other peripheral behavior still need
+interactive validation. Missing Preferences namespaces on the first boot
+use the firmware's default settings.
+
+When packaging a merged image, preserve the generated bootloader's **DIO**
+header. Do not force `--flash_mode qio` in `merge_bin` or `write_flash`.
+PlatformIO intentionally uses DIO for the boot image even though the build
+configures QIO flash operation. Forcing the header to QIO caused ROM-loader
+errors and watchdog resets on the test unit; restoring the generated DIO
+bootloader resolved them. This is a packaging requirement, not a change to
+the application's QIO/OPI memory configuration.
+
 The CC1101 model is not pin-compatible with the original T-Embed. Its display,
 encoder, LEDs, storage, battery measurement, audio, and power handling require
 the CC1101 board adapter selected by `ROGUE_RADAR_BOARD_T_EMBED_CC1101`.
