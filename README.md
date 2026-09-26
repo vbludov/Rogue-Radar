@@ -3,6 +3,11 @@
 </p>
 
 <h1 align="center">Rogue Radar</h1>
+
+> **T-Embed CC1101 port:** see [PORTING_CC1101.md](PORTING_CC1101.md) for the
+> separate build profile, current feature support, and hardware validation status.
+> The original T-Embed remains the default build.
+
 <p align="center"><strong>ESP32-S3 multi-tool firmware for WiFi, BLE, GPS, and device utilities on the LilyGO T-Embed (non CC1101).</strong></p>
 
 ## 🧭 Version Tracker

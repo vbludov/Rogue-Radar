@@ -90,6 +90,7 @@
 #include <lvgl.h>
 #include <RotaryEncoder.h>
 #include "board_leds.h"
+#include "board_backlight.h"
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
@@ -993,7 +994,7 @@ static void cb_bleDetailBack(lv_event_t *e);
 //  INACTIVITY BACKLIGHT + APA102 LED DIMMER
 // ════════════════════════════════════════════════════════════════
 static void applyBacklightLevel(uint8_t level) {
-    ledcWrite(LCD_BL_CH, level);
+    boardBacklightWrite(level);
 }
 
 static uint8_t activeLedBrightness(uint8_t requestedBrightness = LED_BRIGHTNESS) {
@@ -14707,9 +14708,8 @@ void setup() {
 
     applyDisplayRotation(false);
 
-    // Backlight PWM via LEDC — allows smooth brightness control
-    ledcSetup(LCD_BL_CH, LCD_BL_FREQ, LCD_BL_RES);
-    ledcAttachPin(LCD_BL_PIN, LCD_BL_CH);
+    // Original board uses PWM; CC1101 uses AW9364 pulse-count dimming.
+    boardBacklightBegin();
     applyBacklightLevel((uint8_t)lcdBrightness);
     resetInactivityTimer();
 
