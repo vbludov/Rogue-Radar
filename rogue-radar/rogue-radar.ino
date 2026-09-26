@@ -89,7 +89,7 @@
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 #include <RotaryEncoder.h>
-#include <APA102.h>
+#include "board_leds.h"
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
@@ -103,7 +103,15 @@
 #include <Wire.h>
 #include "splash.h"
 
+#if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+static constexpr i2s_port_t RR_SPEAKER_I2S_PORT = I2S_NUM_1;
+#else
+static constexpr i2s_port_t RR_SPEAKER_I2S_PORT = I2S_NUM_0;
+#endif
+
+#if !RR_SHARED_SPI
 static SPIClass sdSPI(HSPI);
+#endif
 static Preferences settingsPrefs;
 
 static HardwareSerial gpsSerial(1);   // UART1 — free since BLE uses its own stack
@@ -155,6 +163,44 @@ static const unsigned long SPLASH_TIME_MS = SPLASH_DURATION_MS;
 
 TFT_eSPI tft = TFT_eSPI();
 
+// On CC1101 the TFT, SD and radio share one physical SPI bus.
+// All callers run synchronously on the UI task; a future radio task must
+// serialize access before using this bus.
+static void boardDeselectSharedSpi() {
+#if RR_SHARED_SPI
+    digitalWrite(TFT_CS, HIGH);
+    digitalWrite(SD_CS, HIGH);
+    digitalWrite(12, HIGH);  // onboard CC1101
+    digitalWrite(44, HIGH);  // optional nRF24 expansion
+#endif
+}
+
+static void boardEarlyInit() {
+#if RR_SHARED_SPI
+    const uint8_t chipSelects[] = {TFT_CS, SD_CS, 12, 44};
+    for (uint8_t pin : chipSelects) {
+        digitalWrite(pin, HIGH);
+        pinMode(pin, OUTPUT);
+    }
+    digitalWrite(43, LOW);  // optional nRF24 CE
+    pinMode(43, OUTPUT);
+    digitalWrite(LCD_BL_PIN, LOW);
+    pinMode(LCD_BL_PIN, OUTPUT);
+#endif
+    pinMode(POWER_PIN, OUTPUT);
+    digitalWrite(POWER_PIN, HIGH);
+    delay(120);
+}
+
+static bool boardMountSd() {
+#if RR_SHARED_SPI
+    boardDeselectSharedSpi();
+    return SD.begin(SD_CS, tft.getSPIinstance(), 4000000);
+#else
+    return SD.begin(SD_CS, sdSPI);
+#endif
+}
+
 // ─── LVGL Buffers ───────────────────────────────────────────────
 static lv_color_t lvBuf1[SCREEN_W * LV_BUF_LINES];
 static lv_color_t lvBuf2[SCREEN_W * LV_BUF_LINES];
@@ -165,7 +211,7 @@ static lv_indev_t   *lvIndev = nullptr;
 RotaryEncoder encoder(ENCODER_A, ENCODER_B, RotaryEncoder::LatchMode::TWO03);
 
 // ─── APA102 LEDs ────────────────────────────────────────────────
-APA102<APA102_DI, APA102_CLK> ledStrip;
+BoardLedStrip ledStrip;
 rgb_color ledBuf[NUM_LEDS];
 
 struct MenuLED { uint8_t r, g, b; };
@@ -1034,26 +1080,27 @@ static void initSound() {
     i2sConfig.use_apll = false;
     i2sConfig.tx_desc_auto_clear = true;
     i2sConfig.fixed_mclk = 0;
-    if (i2s_driver_install(I2S_NUM_0, &i2sConfig, 0, nullptr) != ESP_OK) {
+    if (i2s_driver_install(RR_SPEAKER_I2S_PORT, &i2sConfig, 0, nullptr) != ESP_OK) {
         Serial.println("[Sound] I2S driver install failed");
         soundReady = false;
         return;
     }
 
     i2s_pin_config_t pinConfig = {};
+    pinConfig.mck_io_num = I2S_PIN_NO_CHANGE;
     pinConfig.bck_io_num = SOUND_I2S_BCLK;
     pinConfig.ws_io_num = SOUND_I2S_WCLK;
     pinConfig.data_out_num = SOUND_I2S_DOUT;
     pinConfig.data_in_num = I2S_PIN_NO_CHANGE;
 
-    if (i2s_set_pin(I2S_NUM_0, &pinConfig) != ESP_OK) {
+    if (i2s_set_pin(RR_SPEAKER_I2S_PORT, &pinConfig) != ESP_OK) {
         Serial.println("[Sound] I2S pin setup failed");
-        i2s_driver_uninstall(I2S_NUM_0);
+        i2s_driver_uninstall(RR_SPEAKER_I2S_PORT);
         soundReady = false;
         return;
     }
 
-    i2s_zero_dma_buffer(I2S_NUM_0);
+    i2s_zero_dma_buffer(RR_SPEAKER_I2S_PORT);
     soundReady = true;
     //Serial.println("[Sound] I2S alert chirps ready");  // Added for testing.------------------------------------------------------------------------------------
 }
@@ -1094,7 +1141,7 @@ static void soundTone(uint16_t freqHz, uint16_t durationMs, uint8_t volumePct = 
         }
 
         size_t bytesWritten = 0;
-        i2s_write(I2S_NUM_0, samples, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+        i2s_write(RR_SPEAKER_I2S_PORT, samples, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
         frameIndex += frames;
     }
 }
@@ -1106,7 +1153,7 @@ static void soundSilence(uint16_t durationMs) {
     while (totalFrames > 0) {
         uint16_t frames = totalFrames > 64 ? 64 : totalFrames;
         size_t bytesWritten = 0;
-        i2s_write(I2S_NUM_0, zeros, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+        i2s_write(RR_SPEAKER_I2S_PORT, zeros, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
         totalFrames -= frames;
     }
 }
@@ -1118,8 +1165,8 @@ static void stopSoundDriverAfterChirp() {
     // each chirp. GPIO0 remains a normal encoder/select input only; the old
     // background GPIO0 long-hold shutdown watcher has been removed.
     soundSilence(25);
-    i2s_zero_dma_buffer(I2S_NUM_0);
-    i2s_driver_uninstall(I2S_NUM_0);
+    i2s_zero_dma_buffer(RR_SPEAKER_I2S_PORT);
+    i2s_driver_uninstall(RR_SPEAKER_I2S_PORT);
     soundReady = false;
 
     // Re-assert the encoder button input mode after I2S shuts down.
@@ -1383,6 +1430,7 @@ static void lvgl_flush_cb(lv_display_t *disp,
 {
     uint32_t w = area->x2 - area->x1 + 1;
     uint32_t h = area->y2 - area->y1 + 1;
+    boardDeselectSharedSpi();
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
     tft.pushColors(reinterpret_cast<uint16_t *>(px_map), w * h, true);
@@ -2455,6 +2503,12 @@ void createMainMenu() {
     setGroup(navGroup);
 
     for (int i = 0; i < 5; i++) {
+#if !RR_HAS_GPS
+        if (i == 2) continue;
+#endif
+#if !RR_HAS_RECORDER
+        if (i == 3) continue;
+#endif
         lv_obj_t *btn = lv_list_add_btn(list, MENU_ITEMS[i].icon, MENU_ITEMS[i].label);
         styleListBtn(btn);
         lv_obj_set_height(btn, 30);
@@ -2656,6 +2710,9 @@ static void cb_miscToolBack(lv_event_t *e) {
 
 // ── Misc Tool — Power Off ───────────────────────────────────────
 static void performSoftwarePowerOff() {
+#if !RR_HAS_POWER_OFF
+    return;  // CC1101 needs PMU shutdown, not the original GPIO power latch.
+#endif
     if (powerOffTriggered) return;
     powerOffTriggered = true;
 
@@ -2845,6 +2902,9 @@ void createMiscMenu() {
     miscRotationBtn = nullptr;
 
     for (int i = 0; i < 14; i++) {
+#if !RR_HAS_POWER_OFF
+        if (i == 13) continue;
+#endif
         const char *label = nullptr;
         if (i < 5) {
             label = MISC_TOOL_LABELS[i];
@@ -3056,7 +3116,7 @@ static void otaSetStatus(const char *msg, uint32_t color) {
 static void cb_doFlash(lv_event_t *e) {
     lv_obj_add_state(otaFlashBtn, LV_STATE_DISABLED);
 
-    if (!SD.begin(SD_CS, sdSPI)) {
+    if (!boardMountSd()) {
         otaSetStatus(LV_SYMBOL_CLOSE "  SD card not found!", TH.alert);
         lv_obj_remove_state(otaFlashBtn, LV_STATE_DISABLED);
         return;
@@ -4017,7 +4077,7 @@ void createThemePicker() {
 //
 //  First-pass recorder for the T-Embed ES7210 microphone path.
 //  This keeps audio work isolated from WiFi/BLE/LAN tools. The mic uses
-//  I2S_NUM_1 for input, while the existing speaker chirp path uses I2S_NUM_0
+//  I2S_NUM_1 for input, while the existing speaker chirp path uses RR_SPEAKER_I2S_PORT
 //  for output.
 // ════════════════════════════════════════════════════════════════
 static const char *AUDIO_TOOL_LABELS[] = {
@@ -4215,7 +4275,7 @@ static void cb_soundRecorderFileClicked(lv_event_t *e) {
 static bool soundRecorderEnsureSD(char *diag, size_t diagLen) {
 #if AUDIO_RECORD_SD_SAVE_ENABLED
     if (diag && diagLen) snprintf(diag, diagLen, "Mounting SD...");
-    if (!SD.begin(SD_CS, sdSPI)) {
+    if (!boardMountSd()) {
         if (diag && diagLen) snprintf(diag, diagLen, "SD mount failed");
         return false;
     }
@@ -4716,7 +4776,7 @@ static bool soundRecorderPlayWavFile(const char *path, const char *name) {
     uint32_t playbackRate = ((uint32_t)sampleRate * (uint32_t)AUDIO_RECORD_PLAYBACK_SPEED_PERCENT) / 100U;
     if (playbackRate < 8000U) playbackRate = 8000U;
     if (playbackRate > 48000U) playbackRate = 48000U;
-    i2s_set_clk(I2S_NUM_0, playbackRate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+    i2s_set_clk(RR_SPEAKER_I2S_PORT, playbackRate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
 
     if (soundRecorderPlayBtnLbl) lv_label_set_text(soundRecorderPlayBtnLbl, LV_SYMBOL_STOP "  Playing");
     char status[80];
@@ -4748,7 +4808,7 @@ static bool soundRecorderPlayWavFile(const char *path, const char *name) {
         }
 
         size_t bytesWritten = 0;
-        i2s_write(I2S_NUM_0, stereo, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+        i2s_write(RR_SPEAKER_I2S_PORT, stereo, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
         lv_timer_handler();
     }
 
@@ -4906,6 +4966,9 @@ static void soundRecorderStopInput() {
 }
 
 static bool soundRecorderInitInput() {
+#if !RR_HAS_RECORDER
+    return false;
+#endif
     soundRecorderStopInput();
 
     // The ES7210 must be configured over I2C before the I2S data line
@@ -5159,7 +5222,7 @@ static void cb_soundRecorderPlay(lv_event_t *) {
     uint32_t playbackRate = ((uint32_t)AUDIO_RECORD_SAMPLE_RATE * (uint32_t)AUDIO_RECORD_PLAYBACK_SPEED_PERCENT) / 100U;
     if (playbackRate < 8000U) playbackRate = 8000U;
     if (playbackRate > 48000U) playbackRate = 48000U;
-    esp_err_t clkErr = i2s_set_clk(I2S_NUM_0, playbackRate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+    esp_err_t clkErr = i2s_set_clk(RR_SPEAKER_I2S_PORT, playbackRate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
     Serial.printf("[Audio] Playback rate=%u Hz speed=%u%% clk=%s\n",
                   (unsigned)playbackRate,
                   (unsigned)AUDIO_RECORD_PLAYBACK_SPEED_PERCENT,
@@ -5188,7 +5251,7 @@ static void cb_soundRecorderPlay(lv_event_t *) {
             stereo[i * 2 + 1] = (int16_t)s;
         }
         size_t bytesWritten = 0;
-        i2s_write(I2S_NUM_0, stereo, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+        i2s_write(RR_SPEAKER_I2S_PORT, stereo, frames * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
         pos += frames;
         if ((pos % (framesPerChunk * 8)) == 0) lv_timer_handler();
     }
@@ -5823,7 +5886,7 @@ static void cb_wiggleStart(lv_event_t *e) {
     if (wiggleRunning) return;
 
     // Mount SD
-    if (!SD.begin(SD_CS, sdSPI)) {
+    if (!boardMountSd()) {
         lv_label_set_text(wiggleStatusLbl,
             LV_SYMBOL_CLOSE "  SD card not found!");
         lv_obj_set_style_text_color(wiggleStatusLbl,
@@ -14587,6 +14650,7 @@ static void updateAutoReturnHome() {
 //  SETUP
 // ════════════════════════════════════════════════════════════════
 void setup() {
+    boardEarlyInit();
     Serial.begin(115200);
     delay(300);
 
@@ -14595,16 +14659,17 @@ void setup() {
     Serial.println("[Rogue-Radar] Boot sequence started...");
     Serial.printf("[Rogue-Radar] Reset reason: %d\n", esp_reset_reason());
 
+#if RR_HAS_GPS
     gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+#endif
 
-    // SD card on dedicated HSPI bus — must not share with TFT
+    // Only the original board has a separate SD SPI bus.
+#if !RR_SHARED_SPI
     sdSPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
+#endif
 
-    pinMode(POWER_PIN, OUTPUT);
-    delay(10);
-    digitalWrite(POWER_PIN, HIGH);
-    delay(10);
-
+    pinMode(ENCODER_A, INPUT_PULLUP);
+    pinMode(ENCODER_B, INPUT_PULLUP);
     pinMode(ENCODER_BTN, INPUT_PULLUP);
 
 #if BATTERY_METER_ENABLED
@@ -14704,8 +14769,10 @@ void setup() {
 // ════════════════════════════════════════════════════════════════
 void loop() {
     // Feed all available GPS bytes into TinyGPS++ — non-blocking
+#if RR_HAS_GPS
     while (gpsSerial.available())
         gps.encode(gpsSerial.read());
+#endif
 
     lv_timer_handler();
 
