@@ -61,9 +61,18 @@ log and the checklist below.
 The initial CC1101 build has been flashed to an ESP32-S3 unit with 16 MB
 flash and 8 MB PSRAM. Flash writes passed esptool hash verification, and the
 serial log reached `Boot complete` without a reset during a 25-second capture.
-Display, encoder, radio scans, and other peripheral behavior still need
-interactive validation. Missing Preferences namespaces on the first boot
+Radio scans, sustained operation, and other peripheral behavior still need
+further interactive validation. Missing Preferences namespaces on the first boot
 use the firmware's default settings.
+
+The user subsequently confirmed working display, menu navigation and encoder
+selection. A captured Network Scanner re-entry crash decoded to
+`createNetworkScanner -> lv_obj_delete`: the shared Wi-Fi Back handler left
+`wifiToolScreen` pointing to a screen deleted by the return animation. The
+handler now clears that reference before scheduling deletion. Regression
+check: repeatedly open Network Scanner, return with Back, and reopen it;
+also switch between different Wi-Fi tools. This addresses the captured crash,
+not every possible stability issue.
 
 When packaging a merged image, preserve the generated bootloader's **DIO**
 header. Do not force `--flash_mode qio` in `merge_bin` or `write_flash`.

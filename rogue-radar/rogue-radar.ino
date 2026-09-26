@@ -6484,6 +6484,9 @@ static void cb_wifiToolBack(lv_event_t *e) {
     // LAN Host Discovery / Gateway Info rows in place. Do not rebuild/delete the whole WiFi menu
     // from this Back path; that previously invalidated LVGL objects and caused
     // LoadProhibited reboots after Connect to AP.
+    // The return animation owns deletion of the outgoing tool screen. Drop
+    // our reference now so reopening a tool cannot delete that freed object.
+    wifiToolScreen = nullptr;
     deleteGroup(&wifiToolGroup);
     setGroup(wifiMenuGroup);
     refreshWiFiMenuLanDiscoveryItem();
