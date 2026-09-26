@@ -2111,6 +2111,7 @@ static lv_obj_t *createActionBtn(lv_obj_t *parent,
 
 static lv_obj_t *keyboardMatrix = nullptr;
 
+
 static const char *RR_KB_MAP_LOWER[] = {
     "OK", "caps", "Del", "Space", "Esc", "\n",
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "\n",
@@ -2160,6 +2161,8 @@ static void keyboardQueueOldScreenDelete(lv_obj_t *oldScreen, uint32_t delayMs) 
 }
 
 static void keyboardFinish(bool accepted) {
+
+    resetInactivityTimer();
     RogueKeyboardCallback cb = keyboardDoneCb;
     String out = keyboardCurrentText;
     lv_obj_t *oldKeyboardScreen = keyboardScreen;
@@ -2176,6 +2179,7 @@ static void keyboardFinish(bool accepted) {
         lv_indev_set_group(lvIndev, nullptr);
     }
     deleteGroup(&keyboardGroup);
+
 
     // Clear keyboard object pointers now. The old screen is deleted later,
     // after the callback has loaded the next screen.
@@ -2196,13 +2200,16 @@ static void keyboardFinish(bool accepted) {
     // deferred release flow below.
 
     if (cb) {
+
         cb(accepted ? out.c_str() : "", accepted);
+
     }
 
     // Delete the old keyboard screen only after the callback has had a chance
     // to load the next tool/result page. This avoids deleting
     // the active screen from inside the close flow.
     keyboardQueueOldScreenDelete(oldKeyboardScreen, 450);
+
 }
 
 static void queueKeyboardClickFeedback() {
@@ -2273,7 +2280,9 @@ static void keyboardRequestFinish(bool accepted) {
     keyboardButtonReleasedAtMs = 0;
 
     if (keyboardMatrix) {
+
         lv_obj_add_state(keyboardMatrix, LV_STATE_DISABLED);
+
     }
 
     Serial.printf("[Keyboard] Finish queued: %s\n", accepted ? "OK" : "Esc");
@@ -2583,10 +2592,9 @@ void createKeyboardScreen(const char *title,
 
     Serial.printf("[Keyboard] Created. Free heap: %u bytes\n", ESP.getFreeHeap());
 
-    // Use a direct load for the keyboard test screen.
-    // The slide animation looked nice, but on-device it added visible flicker
-    // around the large button matrix. Direct load is cleaner/stabler here.
-    lv_screen_load(keyboardScreen);
+    // Avoid a visible slide, but let LVGL complete transition bookkeeping if
+    // an AP was selected before its incoming screen animation finished.
+    loadScreenWithoutSlide(keyboardScreen);
 }
 
 static void styleListBtn(lv_obj_t *btn) {
@@ -14848,13 +14856,8 @@ void createMetaDetector() {
 // ════════════════════════════════════════════════════════════════
 #include "signal_tracker_ui.h"
 
-static void deleteIfInactiveScreen(lv_obj_t *&scr, lv_obj_t *activeScr) {
-    // Only delete screens that are not currently active. The active screen is
-    // handled by lv_screen_load_anim(..., auto_del=true) when returning home.
-    if (scr && scr != activeScr && scr != mainScreen) {
-        lv_obj_delete(scr);
-        scr = nullptr;
-    }
+static void releaseScreenForAutoReturnHome(lv_obj_t *&scr, lv_obj_t *activeScr) {
+    releaseScreenForHome(scr, activeScr, mainScreen);
 }
 
 static void cleanupForAutoReturnHome(lv_obj_t *activeScr) {
@@ -14900,17 +14903,17 @@ static void cleanupForAutoReturnHome(lv_obj_t *activeScr) {
     if (wiggleTimer) { lv_timer_delete(wiggleTimer); wiggleTimer = nullptr; }
 
     // Delete inactive screens that would otherwise stay hidden in memory.
-    deleteIfInactiveScreen(subScreen,        activeScr);
-    deleteIfInactiveScreen(wifiMenuScreen,   activeScr);
-    deleteIfInactiveScreen(wifiToolScreen,   activeScr);
-    deleteIfInactiveScreen(wifiDetailScreen, activeScr);
-    deleteIfInactiveScreen(bleMenuScreen,    activeScr);
-    deleteIfInactiveScreen(bleToolScreen,    activeScr);
-    deleteIfInactiveScreen(bleDetailScreen,  activeScr);
-    deleteIfInactiveScreen(miscMenuScreen,   activeScr);
-    deleteIfInactiveScreen(miscToolScreen,   activeScr);
-    deleteIfInactiveScreen(gpsMenuScreen,    activeScr);
-    deleteIfInactiveScreen(gpsToolScreen,    activeScr);
+    releaseScreenForAutoReturnHome(subScreen,        activeScr);
+    releaseScreenForAutoReturnHome(wifiMenuScreen,   activeScr);
+    releaseScreenForAutoReturnHome(wifiToolScreen,   activeScr);
+    releaseScreenForAutoReturnHome(wifiDetailScreen, activeScr);
+    releaseScreenForAutoReturnHome(bleMenuScreen,    activeScr);
+    releaseScreenForAutoReturnHome(bleToolScreen,    activeScr);
+    releaseScreenForAutoReturnHome(bleDetailScreen,  activeScr);
+    releaseScreenForAutoReturnHome(miscMenuScreen,   activeScr);
+    releaseScreenForAutoReturnHome(miscToolScreen,   activeScr);
+    releaseScreenForAutoReturnHome(gpsMenuScreen,    activeScr);
+    releaseScreenForAutoReturnHome(gpsToolScreen,    activeScr);
 
     // Drop non-home input groups. The main menu group is kept.
     deleteGroup(&subGroup);
@@ -14928,7 +14931,11 @@ static void cleanupForAutoReturnHome(lv_obj_t *activeScr) {
 
 static void updateAutoReturnHome() {
 #if AUTO_RETURN_HOME_TIMEOUT_MS > 0
-    if (signalTrackerActive || pocketModeActive || powerOffTriggered || !mainScreen) return;
+    // A keyboard owns its return screen and group until its completion callback.
+    // Home cleanup must not retire either one while editing/closing is in progress.
+    if (keyboardActive || keyboardFinishPending || signalTrackerActive ||
+        pocketModeActive || powerOffTriggered || !mainScreen ||
+        lv_display_get_screen_prev(lvDisp)) return;
 #if RR_BACK_BUTTON_PIN >= 0
     // Do not tear down a monitor while the user is holding/releasing the
     // Pocket Mode gesture, including its stable-release debounce interval.
@@ -15096,6 +15103,7 @@ void loop() {
 #endif
 
     lv_timer_handler();
+
 
     processBackShortcut();
     processSignalTracker();

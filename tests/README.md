@@ -17,8 +17,13 @@ bash tests/run_lvgl_tests.sh /path/to/.pio/libdeps/t_embed_cc1101/lvgl
 ```
 
 It validates deferred deletion across animated screen transitions and external
-deletion/address reuse. It also exercises a representative 64-bit host version
-of the Connect-to-AP cancel allocation boundary with 30 AP rows: reusing the
+deletion/address reuse. The lifecycle case uses a real encoder input device,
+editing group, disabled button matrix, group handoff, animated AP-list return,
+and deferred keyboard deletion for Esc and the shared top-Back cancel boundary
+(not its GPIO interrupt/debounce). It also verifies interrupted keyboard loads
+clear previous-screen state and idle-home retirement clears screen references
+before menu recreation. It also exercises a representative 64-bit host version
+of the Connect-to-AP cancel allocation pattern with 30 AP rows: reusing the
 retained list must pass, while rebuilding a second list while the keyboard is
 retained must hit the 64 KB allocator assertion. This is not a build of the
 whole Arduino sketch, and exact byte counts can vary by host architecture.

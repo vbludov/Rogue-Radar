@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.8 | CC1101 test build | Protects keyboard editing from idle home cleanup, clears retired menu references, and fixes stale transition state when opening the keyboard |
 | v1.1.0-cc1101.7 | CC1101 test build | Fixes Connect to AP keyboard cancellation by reusing the AP list; protects deferred screen cleanup during transitions |
 | v1.1.0-cc1101.6 | CC1101 test build | Adds direct Track Signal access to nyanBOX, Axon, Raven, Smart Charger, Tesla, Skimmer, and Meta detector results |
 | v1.1.0-cc1101.5 | CC1101 test build | Enlarges Track Signal history chart by 39%; places RSSI beside history and removes the separate status row |

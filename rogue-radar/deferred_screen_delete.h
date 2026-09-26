@@ -99,4 +99,19 @@ static void queueDeferredScreenDelete(lv_obj_t *screen, uint32_t delayMs) {
     requests = request;
 }
 
+// Relinquish every retiring screen reference before the home animation owns
+// deletion of the active screen. Inactive screens may still be in a transition.
+static void releaseScreenForHome(lv_obj_t *&screen, lv_obj_t *active, lv_obj_t *home) {
+    if (!screen || screen == home) return;
+    lv_obj_t *retired = screen;
+    screen = nullptr;
+    if (retired != active) queueDeferredScreenDelete(retired, 1);
+}
+
+// LVGL 9.0's zero-duration direct load can leave prev_scr set when interrupting
+// another animation. A one-ms non-sliding transition runs its completion cleanup.
+static void loadScreenWithoutSlide(lv_obj_t *screen) {
+    lv_screen_load_anim(screen, LV_SCR_LOAD_ANIM_NONE, 1, 0, false);
+}
+
 #endif  // ROGUE_RADAR_DEFERRED_SCREEN_DELETE_H

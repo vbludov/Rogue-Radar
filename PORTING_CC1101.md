@@ -224,6 +224,36 @@ the top button, and repeat. Check the retained selection, Wi-Fi Tools Back and
 re-entry, and both successful and failed password submission to an authorized
 AP. Device interaction testing remains pending until confirmed by the user.
 
+### Keyboard and idle screen lifecycle (v1.1.0-cc1101.8)
+
+Follow-up to the remaining crash report after v1.1.0-cc1101.7: a captured device
+LoadProhibited backtrace resolves to `createWiFiMenu()` deleting a retired menu.
+Idle-home cleanup previously kept the active screen's pointer even though LVGL
+automatically deleted that screen. It could also tear down the password keyboard's
+return screen and group while editing was still active.
+
+Idle return now waits while a keyboard is open/closing or a screen transition is
+active. Closing the keyboard refreshes the activity timer. Home cleanup drops
+both active and inactive screen references before scheduling their deletion,
+so reopening a menu cannot delete its old allocation again.
+
+A separate pinned-LVGL regression reproduced stale previous-screen state when a
+direct keyboard load interrupts an animation. The keyboard now uses a one-ms
+transition without sliding so LVGL runs its completion cleanup; stale transition
+state no longer blocks input and the top Back shortcut in that scenario.
+
+Host checks cover actual encoder events opening the keyboard, Esc and shortcut
+cancel boundaries, interrupted transitions, and menu retirement/recreation.
+An instrumented on-device run passed six cancellations with 30 synthetic AP
+entries, alternating encoder Esc and the top-button release handler, including
+an intentionally interrupted incoming screen animation. Forced idle expiry
+left the keyboard's return state intact in every cycle. Idle-home cleanup and
+subsequent Wi-Fi menu recreation also completed. The automatic diagnostic
+sequence is excluded from the normal firmware.
+Both normal board profiles compiled successfully, and the normal CC1101 app
+was flashed with hash verification and booted as v1.1.0-cc1101.8.
+Physical reproduction of the user's original sequence remains a required check.
+
 ### Track Signal (v1.1.0-cc1101.4)
 
 Open a Network Scanner or BLE Scanner result, then select **Track Signal**.

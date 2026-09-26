@@ -40,6 +40,7 @@ done < <(find "$lvgl_dir/src" -name '*.c' -print0)
     "$tmp_dir/liblvgl.a" -lm -o "$tmp_dir/lvgl_keyboard_lifecycle_test"
 
 "$tmp_dir/lvgl_keyboard_lifecycle_test" helper
+"$tmp_dir/lvgl_keyboard_lifecycle_test" exact
 "$tmp_dir/lvgl_keyboard_lifecycle_test" fixed
 
 set +e
