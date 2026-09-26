@@ -259,9 +259,11 @@ BLE and AirTag lists.
 
 The next planned feature is **Saved Devices — Find and Track Known Devices**:
 name and save known Wi-Fi/BLE targets, then reopen them later to find and locate
-them using the existing tracker. **Nearby Signals** follows, adding a ranked
-discovery list with history charts, trend indicators, and save/track actions.
-Both are planned, not yet implemented; see [FEATURE_PLAN.md](FEATURE_PLAN.md).
+them using the existing tracker. **Learn a Known Device** follows, adding
+advertised details and multiple user-confirmed addresses to saved records.
+**Nearby Signals** comes next, adding a ranked discovery list with history
+charts, trend indicators, and save/learn/track actions. These features are
+planned, not yet implemented; see [FEATURE_PLAN.md](FEATURE_PLAN.md).
 
 ### General hardware checks
 

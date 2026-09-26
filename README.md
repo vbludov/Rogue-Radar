@@ -294,7 +294,10 @@ Planned next, in this order (not yet implemented):
 1. **Saved Devices — Find and Track Known Devices:** save a known Wi-Fi or BLE
    device with a custom name, then select it later to find and locate it through
    Track Signal's live chart, LED ring meter, and optional audio guidance.
-2. **Nearby Signals:** discover Wi-Fi access points and BLE advertisers in a
+2. **Learn a Known Device:** select a nearby candidate and save its advertised
+   details; associate additional observed addresses with explicit confirmation.
+   Similar advertisements suggest possible matches, not confirmed identities.
+3. **Nearby Signals:** discover Wi-Fi access points and BLE advertisers in a
    stable, signal-ranked list, then track a result or save it for future locating.
 
 See the [feature plan](FEATURE_PLAN.md) for descriptions, storage, identity
