@@ -355,12 +355,13 @@ static void showList() {
         lv_obj_set_pos(chart, 210, 13);
         lv_obj_remove_flag(chart, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_pad_all(chart, 0, 0);
+        lv_obj_set_style_pad_ver(chart, 2, 0);
         lv_obj_set_style_radius(chart, 0, 0);
         lv_obj_set_style_border_width(chart, 0, 0);
         lv_obj_set_style_bg_opa(chart, LV_OPA_TRANSP, 0);
         lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
         lv_chart_set_point_count(chart, KnownSignalTable::HistoryBuckets);
-        lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, -110, -20);
+        lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, -130, 0);
         lv_chart_set_div_line_count(chart, 0, 0);
         lv_chart_series_t *series = lv_chart_add_series(
             chart, lv_color_hex(TH.accent), LV_CHART_AXIS_PRIMARY_Y);
@@ -649,10 +650,13 @@ static void paintList() {
         for (size_t point = 0; point < KnownSignalTable::HistoryBuckets; ++point) {
             const int16_t rssi = candidate->history[
                 KnownSignalTable::HistoryBuckets - 1 - point];
+            int16_t plottedRssi = rssi;
+            if (plottedRssi < -127) plottedRssi = -127;
+            if (plottedRssi > 0) plottedRssi = 0;
             lv_chart_set_value_by_id(
                 state.rowCharts[slot], state.rowChartSeries[slot], point,
                 rssi == KnownSignalCandidate::MissingRssi
-                    ? LV_CHART_POINT_NONE : rssi);
+                    ? LV_CHART_POINT_NONE : plottedRssi);
         }
         lv_chart_refresh(state.rowCharts[slot]);
         lv_obj_set_style_text_color(state.rows[slot],

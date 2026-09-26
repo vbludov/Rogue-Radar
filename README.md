@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.13 | CC1101 test build | Keeps strong and weak RSSI history visible in Nearby Signals and Track Signal with full-range chart scales and bounded plotting |
 | v1.1.0-cc1101.12 | CC1101 test build | Fixes excessive stack use in saved-device storage and screen resets; 2 GB FAT32 CRUD, restart persistence, and saved Amazfit tracking verified on hardware |
 | v1.1.0-cc1101.11 | CC1101 test build | Adds SD-backed Saved Devices, guided Learn a Known Device capture, Nearby Signals, and reopening named targets in Track Signal; live discovery and Amazfit learning tested, SD persistence awaiting card detection |
 | v1.1.0-cc1101.10 | CC1101 test build | Adds Timed/Continuous scan sessions, Start/Stop, compact alert toggles, safe detail/tracker handoffs, and protection from inactivity timeout |
@@ -35,7 +36,7 @@
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
 >
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.12` — host tests and physical SD persistence/saved-target tracking pass; see the feature plan for remaining hardware checks.
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.13` — host tests and physical SD persistence/saved-target tracking pass; see the feature plan for remaining hardware checks.
 ---
 
 ## Overview

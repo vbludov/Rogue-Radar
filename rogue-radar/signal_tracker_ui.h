@@ -161,9 +161,9 @@ static void processSignalTracker() {
         for (uint32_t i = 0; i < rogue_radar::SignalTrackerModel::kBucketCount; ++i) {
             const auto b = trackerModel.bucket(i);
             lv_chart_set_value_by_id(trackerChart, trackerRawSeries, i,
-                b.raw == rogue_radar::SignalTrackerModel::kAbsent ? LV_CHART_POINT_NONE : b.raw);
+                b.raw == rogue_radar::SignalTrackerModel::kAbsent ? LV_CHART_POINT_NONE : constrain(b.raw, -127, 0));
             lv_chart_set_value_by_id(trackerChart, trackerSmoothSeries, i,
-                b.smoothed == rogue_radar::SignalTrackerModel::kAbsent ? LV_CHART_POINT_NONE : b.smoothed);
+                b.smoothed == rogue_radar::SignalTrackerModel::kAbsent ? LV_CHART_POINT_NONE : constrain(b.smoothed, -127, 0));
         }
         lv_chart_refresh(trackerChart);
     }
@@ -273,11 +273,13 @@ static void createSignalTracker(bool isBle, const char *name, const char *mac, u
     lv_obj_clear_flag(trackerChart, LV_OBJ_FLAG_SCROLLABLE);
     lv_chart_set_type(trackerChart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(trackerChart, rogue_radar::SignalTrackerModel::kBucketCount);
-    lv_chart_set_range(trackerChart, LV_CHART_AXIS_PRIMARY_Y, -100, -30);
+    lv_chart_set_range(trackerChart, LV_CHART_AXIS_PRIMARY_Y, -130, 0);
     lv_chart_set_div_line_count(trackerChart, 3, 5);
     lv_obj_set_style_bg_color(trackerChart, TC(card), 0);
     lv_obj_set_style_border_width(trackerChart, 0, 0);
     lv_obj_set_style_pad_all(trackerChart, 0, 0);
+    lv_obj_set_style_pad_top(trackerChart, 2, 0);
+    lv_obj_set_style_pad_bottom(trackerChart, 2, 0);
     lv_obj_set_style_line_color(trackerChart, TC(border), LV_PART_MAIN);
     lv_obj_set_style_size(trackerChart, 0, 0, LV_PART_INDICATOR);
     trackerRawSeries = lv_chart_add_series(trackerChart, TC(textDim), LV_CHART_AXIS_PRIMARY_Y);
@@ -293,10 +295,10 @@ static void createSignalTracker(bool isBle, const char *name, const char *mac, u
     lv_label_set_text(trackerStatusLabel, "Waiting for signal");
     lv_obj_center(trackerStatusLabel);
     lv_obj_t *high = lv_label_create(trackerScreen);
-    lv_label_set_text(high, "-30"); lv_obj_set_pos(high, 3, 47);
+    lv_label_set_text(high, "0"); lv_obj_set_pos(high, 3, 47);
     lv_obj_set_style_text_color(high, TC(textDim), 0);
     lv_obj_t *low = lv_label_create(trackerScreen);
-    lv_label_set_text(low, "-100"); lv_obj_set_pos(low, 0, 119);
+    lv_label_set_text(low, "-130"); lv_obj_set_pos(low, 0, 119);
     lv_obj_set_style_text_color(low, TC(textDim), 0);
 
     trackerGroup = lv_group_create();
