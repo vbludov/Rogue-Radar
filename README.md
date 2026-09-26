@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.9 | CC1101 test build | Adds main-menu Power On/Off with confirmation, BQ25896 battery shutdown, USB guard, and power-on instructions |
 | v1.1.0-cc1101.8 | CC1101 test build | Protects keyboard editing from idle home cleanup, clears retired menu references, and fixes stale transition state when opening the keyboard |
 | v1.1.0-cc1101.7 | CC1101 test build | Fixes Connect to AP keyboard cancellation by reusing the AP list; protects deferred screen cleanup during transitions |
 | v1.1.0-cc1101.6 | CC1101 test build | Adds direct Track Signal access to nyanBOX, Axon, Raven, Smart Charger, Tesla, Skimmer, and Meta detector results |
@@ -31,7 +32,7 @@
 
 > **Latest Release:** `v1.0.5` — Rogue Radar Firmware
 >
-> **Latest CC1101 branch build:** `v1.1.0-cc1101.6` — hardware testing in progress.
+> **Latest CC1101 branch build:** `v1.1.0-cc1101.9` — hardware testing in progress.
 ---
 
 ## Overview
@@ -244,7 +245,7 @@ Rogue Radar is built around a **rotary encoder driven interface** using LVGL inp
 - **Rotate encoder** to move through menus and lists
 - **Press encoder** to select items
 - **T-Embed CC1101 top button:** press and release to go Back one level, or cancel text entry. It does nothing on the main menu. During a blocking scan, Back is deferred until the scan returns; holding the button does not repeat.
-- **Power Off** is available through Misc Tools on supported board profiles.
+- **Power On/Off** is available directly from the main menu (also **Misc Tools → Power Off**). On CC1101, unplug USB before confirming **Power Off**, then allow up to 15 seconds for shutdown. Turn it on with the hardware **PWR/QON** button or reconnect USB. The top Back button is not the PMU power button.
 
 The APA102 LEDs are also used for menu color feedback and scan animations. Optional speaker feedback can provide detection chirps and quiet menu tick/click sounds.
 

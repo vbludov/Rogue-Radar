@@ -104,6 +104,7 @@
 #include <driver/i2s.h>
 #include <esp_heap_caps.h>
 #include <Wire.h>
+#include "cc1101_power.h"
 #include "splash.h"
 
 #if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
@@ -226,12 +227,13 @@ AlertLedStrip ledStrip;
 rgb_color ledBuf[NUM_LEDS];
 
 struct MenuLED { uint8_t r, g, b; };
-const MenuLED MENU_COLORS[5] = {
+const MenuLED MENU_COLORS[6] = {
     LED_COLOR_WIFI,
     LED_COLOR_BLE,
     LED_COLOR_GPS,
     LED_COLOR_AUDIO,
-    LED_COLOR_MISC
+    LED_COLOR_MISC,
+    {255, 32, 32}
 };
 
 // ─── LED Spinner (FreeRTOS task on core 0) ───────────────────────
@@ -2640,12 +2642,13 @@ static void deleteGroup(lv_group_t **g)   { if (*g) { lv_group_delete(*g); *g = 
 //  MAIN MENU
 // ════════════════════════════════════════════════════════════════
 struct MenuItem { const char *icon; const char *label; const char *subTitle; };
-static const MenuItem MENU_ITEMS[5] = {
+static const MenuItem MENU_ITEMS[6] = {
     { LV_SYMBOL_WIFI,      "WiFi Tools",   LV_SYMBOL_WIFI      "  WiFi Tools"   },
     { LV_SYMBOL_BLUETOOTH, "BLE Tools",    LV_SYMBOL_BLUETOOTH "  BLE Tools"    },
     { LV_SYMBOL_GPS,       "GPS Tools",    LV_SYMBOL_GPS       "  GPS Tools"    },
     { LV_SYMBOL_AUDIO,     "Audio Tools",  LV_SYMBOL_AUDIO     "  Audio Tools"  },
     { LV_SYMBOL_SETTINGS,  "Misc Tools",   LV_SYMBOL_SETTINGS  "  Misc Tools"   },
+    { LV_SYMBOL_POWER,     "Power On/Off", LV_SYMBOL_POWER     "  Power On/Off" },
 };
 
 static void cb_menuFocused(lv_event_t *e) {
@@ -2661,6 +2664,7 @@ static void cb_menuClicked(lv_event_t *e) {
     else if (idx == 2) createGPSMenu();
     else if (idx == 3) createAudioMenu();
     else if (idx == 4) createMiscMenu();
+    else if (idx == 5) createPowerOffConfirm();
     else               createSubScreen(idx);
 }
 
@@ -2686,7 +2690,7 @@ void createMainMenu() {
     navGroup = lv_group_create();
     setGroup(navGroup);
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
 #if !RR_HAS_GPS
         if (i == 2) continue;
 #endif
@@ -2893,57 +2897,101 @@ static void cb_miscToolBack(lv_event_t *e) {
 
 
 // ── Misc Tool — Power Off ───────────────────────────────────────
-static void performSoftwarePowerOff() {
-#if !RR_HAS_POWER_OFF
-    return;  // CC1101 needs PMU shutdown, not the original GPIO power latch.
+static bool powerOffRequested = false;
+static lv_obj_t *powerOffMessage = nullptr;
+static bool powerOffFromMain = false;
+
+#if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+struct PowerRegisterBus {
+    bool read(uint8_t reg, uint8_t &value) {
+        Wire.beginTransmission(0x6b);
+        Wire.write(reg);
+        if (Wire.endTransmission(false) != 0 ||
+            Wire.requestFrom(uint8_t(0x6b), uint8_t(1)) != 1) return false;
+        value = Wire.read();
+        return true;
+    }
+    bool write(uint8_t reg, uint8_t value) {
+        Wire.beginTransmission(0x6b);
+        Wire.write(reg);
+        Wire.write(value);
+        return Wire.endTransmission() == 0;
+    }
+};
 #endif
-    if (powerOffTriggered) return;
-    powerOffTriggered = true;
 
-    // Stop active WiFi promiscuous modes cleanly before pulling the latch low.
-    if (deauthActive) {
-        deauthActive = false;
-        esp_wifi_set_promiscuous(false);
+static void performSoftwarePowerOff() {
+    if (!powerOffRequested) return;
+    powerOffRequested = false;
+#if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+    Wire.begin(RR_I2C_SDA, RR_I2C_SCL);
+    Wire.setTimeOut(50);
+    PowerRegisterBus bus;
+    uint8_t restoreValue = 0;
+    const auto result = cc1101Power::requestShutdown(bus, restoreValue);
+    if (result != cc1101Power::Result::Ready) {
+        lv_label_set_text(powerOffMessage,
+            result == cc1101Power::Result::UsbConnected
+            ? "USB is powering the device.\nUnplug USB, then select Power Off."
+            : "Power controller unavailable.\nPower off failed; please retry.");
+        powerOffTriggered = false;
+        resetInactivityTimer();
+        return;
     }
-    if (deauthTimer) {
-        lv_timer_delete(deauthTimer);
-        deauthTimer = nullptr;
-    }
-
-    // Show a simple final screen so the user gets clear feedback.
-    lv_obj_t *offScr = lv_obj_create(nullptr);
-    lv_obj_set_style_bg_color(offScr, lv_color_hex(0x000000), LV_PART_MAIN);
-
-    lv_obj_t *msg = lv_label_create(offScr);
-    lv_label_set_text(msg, LV_SYMBOL_POWER "  Powering off...");
-    lv_obj_set_style_text_color(msg, lv_color_hex(0xff4444), LV_PART_MAIN);
-    lv_obj_center(msg);
-
-    lv_screen_load(offScr);
+    lv_label_set_text(powerOffMessage, "Powering off...\nPlease wait up to 15 seconds.");
+#else
+    lv_label_set_text(powerOffMessage, "Powering off...");
+#endif
+    lv_indev_enable(lvIndev, false);
+    // Executed from loop(), outside LVGL input callbacks. Render once, then
+    // stop UI/scan processing while the PMU's delayed battery cut completes.
     lv_timer_handler();
-
-    // Silence lights/sound before shutting down.
     setAllLEDs(0, 0, 0, 0);
-    if (soundReady) {
-        stopSoundDriverAfterChirp();
-    }
-
+    if (soundReady) stopSoundDriverAfterChirp();
+#if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+    delay(16000);
+    // Reaching here means external power arrived or the PMU did not cut power.
+    // Re-enable the battery path and give the user a usable retry/Back screen.
+    const bool restored = bus.write(0x09, restoreValue);
+    lv_label_set_text(powerOffMessage, restored
+        ? "Still powered. Unplug USB,\nthen retry Power Off."
+        : "Power recovery failed.\nReconnect USB before continuing.");
+    powerOffTriggered = false;
+    resetInactivityTimer();
+    setAllLEDs(255, 32, 32);
+    lv_indev_reset(lvIndev, nullptr);
+    lv_indev_enable(lvIndev, true);
+#else
     delay(POWER_OFF_DELAY_MS);
-
-    // T-Embed power latch: pulling POWER_PIN low turns the board off.
     digitalWrite(POWER_PIN, LOW);
+#endif
 }
 
 static void cb_powerOffConfirm(lv_event_t *e) {
     (void)e;
-    performSoftwarePowerOff();
+    if (powerOffTriggered) return;
+    powerOffTriggered = true;
+    powerOffRequested = true;
+}
+
+static void cb_powerOffBack(lv_event_t *e) {
+    powerOffMessage = nullptr;
+    if (!powerOffFromMain) {
+        cb_miscToolBack(e);
+        return;
+    }
+    miscToolScreen = nullptr;
+    deleteGroup(&miscToolGroup);
+    setGroup(navGroup);
+    lv_screen_load_anim(mainScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, true);
 }
 
 void createPowerOffConfirm() {
+    powerOffFromMain = (lv_screen_active() == mainScreen);
     if (miscToolScreen) { lv_obj_delete(miscToolScreen); miscToolScreen = nullptr; }
     miscToolScreen = lv_obj_create(nullptr);
     applyScreenStyle(miscToolScreen);
-    createHeader(miscToolScreen, LV_SYMBOL_POWER "  Power Off");
+    createHeader(miscToolScreen, LV_SYMBOL_POWER "  Power On/Off");
 
     lv_obj_t *card = lv_obj_create(miscToolScreen);
     lv_obj_set_size(card, SCREEN_W - 18, 82);
@@ -2955,15 +3003,22 @@ void createPowerOffConfirm() {
     lv_obj_set_style_pad_all(card, 8, LV_PART_MAIN);
 
     lv_obj_t *msg = lv_label_create(card);
-    lv_label_set_text(msg,
-                      "Power off Rogue Radar?\n"
-                      "This puts the T-Embed to sleep.\n (Not actual power off)");
+    powerOffMessage = msg;
+#if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+    lv_label_set_text(msg, "Power off? Unplug USB first.\n"
+                           "Power on: PWR/QON button\n"
+                           "or reconnect USB.");
+#else
+    lv_label_set_text(msg, "Power off Rogue Radar?\n"
+                           "Use the hardware power control\n"
+                           "to turn it back on.");
+#endif
     lv_obj_set_style_text_color(msg, TC(text), LV_PART_MAIN);
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_set_width(msg, SCREEN_W - 42);
     lv_obj_center(msg);
 
-    lv_obj_t *backBtn = createBackBtn(miscToolScreen, cb_miscToolBack);
+    lv_obj_t *backBtn = createBackBtn(miscToolScreen, cb_powerOffBack);
     lv_obj_t *powerBtn = createActionBtn(miscToolScreen, LV_SYMBOL_POWER "  Power Off", cb_powerOffConfirm);
     lv_obj_set_style_bg_color(powerBtn, lv_color_hex(TH.stopRed), LV_PART_MAIN);
     lv_obj_set_style_border_color(powerBtn, lv_color_hex(TH.alert), LV_PART_MAIN);
@@ -15063,6 +15118,18 @@ void setup() {
     createMainMenu();
     updateTopbarWifiOverlay(true);
 
+#if defined(ROGUE_RADAR_BOARD_T_EMBED_CC1101)
+    Wire.begin(RR_I2C_SDA, RR_I2C_SCL);
+    Wire.setTimeOut(50);
+    PowerRegisterBus powerBus;
+    uint8_t powerId = 0, powerVbus = 0;
+    if (powerBus.read(0x14, powerId) && powerBus.read(0x11, powerVbus)) {
+        Serial.printf("[Power] PMU identity=0x%02x, USB=%s\n", powerId,
+                      (powerVbus & 0x80) ? "connected" : "absent");
+    } else {
+        Serial.println("[Power] PMU unavailable");
+    }
+#endif
     Serial.printf("[Rogue-Radar] Device: %s\n", DEVICE_TYPE);
     Serial.printf("[Rogue-Radar] Firmware: %s\n", FIRMWARE_VERSION);
     Serial.printf("[Rogue-Radar] Persistent Settings: %s\n", PERSISTENT_SETTINGS_ENABLED ? "ON" : "OFF");
@@ -15105,6 +15172,7 @@ void loop() {
     lv_timer_handler();
 
 
+    performSoftwarePowerOff();
     processBackShortcut();
     processSignalTracker();
 
@@ -15143,7 +15211,7 @@ void loop() {
         }
     }
 
-    // Software power-off now lives at Misc Tools > Power Off.
+    // Software power-off is available directly from the main menu.
     // GPIO0 is no longer watched in the background for long-hold shutdown.
 
 

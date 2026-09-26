@@ -8,6 +8,11 @@ sh tests/run_host_tests.sh
 
 The script uses `CXX` when set, defaults to `g++`, and builds in a temporary directory outside the checkout.
 
+It also tests CC1101 power control with an injected register bus: USB rejection
+without writes, identity/read/write failures, delayed battery cutoff, and
+preservation of unrelated PMU settings across all register values. Physical
+shutdown and PWR/QON wake still require the board.
+
 The optional LVGL lifecycle regression compiles the pinned LVGL source with
 the firmware's 64 KB built-in memory pool. Pass the installed LVGL dependency
 directory explicitly:

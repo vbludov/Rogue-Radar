@@ -103,7 +103,8 @@ the CC1101 board adapter selected by `ROGUE_RADAR_BOARD_T_EMBED_CC1101`.
 | Microphone recording/audio menu | Disabled/unavailable |
 | GPS | Disabled/unavailable |
 | Battery gauge/charger data | Disabled/unavailable |
-| Software shutdown/deep sleep | Disabled/unavailable |
+| Software shutdown | BQ25896 battery shutdown with USB guard; physical off/on validation pending |
+| Deep sleep | Not implemented |
 | Onboard CC1101, PN532, and infrared | No Rogue Radar features yet |
 
 The display, SD card, CC1101, and optional nRF24 share one SPI bus on GPIO
@@ -252,7 +253,7 @@ subsequent Wi-Fi menu recreation also completed. The automatic diagnostic
 sequence is excluded from the normal firmware.
 Both normal board profiles compiled successfully, and the normal CC1101 app
 was flashed with hash verification and booted as v1.1.0-cc1101.8.
-Physical reproduction of the user's original sequence remains a required check.
+The user subsequently confirmed the original keyboard-exit sequence works.
 
 ### Track Signal (v1.1.0-cc1101.4)
 
@@ -348,3 +349,37 @@ power latch.
 The CC1101 board also assigns GPIO 43/44 to its exposed UART and optionally to
 nRF24 CE/CS. A GPS attached there and nRF24 support cannot be active at the
 same time without a deliberate mux policy.
+
+### Power On/Off (v1.1.0-cc1101.9)
+
+Main menu **Power On/Off** opens a confirmation page with Back selected by
+default. The existing Misc Tools shortcut opens the same page and returns to
+its own menu. Both the encoder Back and top-button Back cancel normally.
+
+The CC1101 uses BQ25896 ship mode, not GPIO15 (a peripheral rail). Unplug USB
+before selecting **Power Off**; USB power cannot be removed by cutting the
+battery path. Turn on using the hardware **PWR/QON** button or reconnect USB,
+not the GPIO6 top Back button. Shutdown takes up to 15 seconds because
+BATFET_DLY is enabled so the I2C transaction completes before battery cutoff.
+
+The implementation checks PMU identity and VBUS_GD, preserves unrelated
+register settings, and reports I2C errors without stranding the UI. If power
+remains after 16 seconds, it attempts to restore the battery path and returns
+a retry message. No charger voltage/current settings are changed. The original
+board retains its GPIO power-latch path.
+
+References: [LilyGO shutdown example](https://github.com/Xinyuan-LilyGO/T-Embed-CC1101/blob/master/examples/bq25896_shutdown/bq25896_shutdown.ino),
+[TI BQ25896 datasheet](https://www.ti.com/lit/ds/symlink/bq25896.pdf), and
+[TI delayed-shutdown guidance](https://e2e.ti.com/support/power-management-group/power-management/f/power-management-forum/1261767/bq25896-stops-outputting-vsys-and-won-t-exit-unknown-mode).
+
+Hardware checks: cancel/reopen from each menu; select Power Off with USB
+connected and verify the guard; unplug USB and confirm shutdown; restart via
+PWR/QON and separately via USB. Physical shutdown/wake remains pending user
+validation. Host fault-injection tests cover identity/read/write failures,
+USB rejection without writes, and preservation of register settings.
+
+Validation: both PlatformIO profiles and all host suites passed. The CC1101
+application was flashed with hash verification and booted as
+`v1.1.0-cc1101.9`; the board reported PMU identity `0x06` (BQ25896 with JEITA
+profile) and USB connected. Battery cutoff and physical wake are not yet
+confirmed.

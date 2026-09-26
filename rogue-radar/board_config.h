@@ -9,7 +9,7 @@
 #define RR_HAS_GPS             0
 #define RR_HAS_RECORDER        0
 #define RR_HAS_BATTERY_METER   0
-#define RR_HAS_POWER_OFF       0
+#define RR_HAS_POWER_OFF       1
 #define RR_HAS_SPEAKER         1
 
 // Switched 3.3 V rail, display and encoder.
