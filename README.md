@@ -292,7 +292,7 @@ __METHOD 2__ <br>
 Planned next, in this order (not yet implemented):
 
 1. **Saved Devices — Find and Track Known Devices:** save a known Wi-Fi or BLE
-   device with a custom name, then select it later to find and locate it through
+   device on the SD card with a custom name, then select it later to locate it through
    Track Signal's live chart, LED ring meter, and optional audio guidance.
 2. **Learn a Known Device:** select a nearby candidate and save its advertised
    details; associate additional observed addresses with explicit confirmation.

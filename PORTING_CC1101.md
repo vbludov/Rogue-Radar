@@ -258,7 +258,7 @@ Pocket Mode, and repeated Back/re-entry followed by a normal rescan for Wi-Fi,
 BLE and AirTag lists.
 
 The next planned feature is **Saved Devices — Find and Track Known Devices**:
-name and save known Wi-Fi/BLE targets, then reopen them later to find and locate
+name and save known Wi-Fi/BLE targets on the SD card, then reopen them to locate
 them using the existing tracker. **Learn a Known Device** follows, adding
 advertised details and multiple user-confirmed addresses to saved records.
 **Nearby Signals** comes next, adding a ranked discovery list with history

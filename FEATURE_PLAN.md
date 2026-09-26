@@ -18,7 +18,7 @@ identified device, without first finding it again in a discovery list.
 ### Planned behavior
 
 - Save the selected device's custom name, Wi-Fi/BLE type, observed address,
-  and last-seen information in internal flash, accessible without an SD card.
+  and last-seen information on the SD card as the primary saved-device library.
 - Open Saved Devices, choose a known target, and select Track Signal.
 - If the target is out of range or not advertising, show “Waiting for [name]”
   and withhold guidance beeps/ring readings until fresh signals arrive.
@@ -26,9 +26,18 @@ identified device, without first finding it again in a discovery list.
   audio guidance. Resume waiting when the signal is lost.
 - Rename or delete saved entries, and manually relink an entry to a newly
   observed device address using “Update from nearby device.”
-- Provide optional SD export/import for backups.
+- Allow backing up the library by copying its files from the SD card.
+- If the card is missing or unreadable, show that the saved library is
+  unavailable; keep live scanning and tracking available. Report failed saves
+  clearly rather than silently creating a second library in internal flash.
 
 ### Storage foundation
+
+Use SD storage for device records and learned advertisement details; internal
+flash remains suitable for small application preferences. SD capacity provides
+room to grow, while the record format provides support for multiple addresses.
+Read records as needed with bounded memory use rather than loading the entire
+library into RAM. Keep files in a dedicated application directory.
 
 Design saved records for multiple user-confirmed addresses from the beginning,
 even though the first implementation saves one selected address per device.
@@ -36,10 +45,16 @@ Keep address type, observation metadata, and advertised details separate from
 the custom name. Bound record sizes and address counts, and version the storage
 format so learning can be added without discarding existing saved devices.
 
+Use recoverable writes with a temporary file and a last-known-good copy; validate
+records before accepting them. Test interrupted writes, card removal, malformed
+files, and a full card. Batch observation updates instead of writing on every
+scan result. Validate SD access alongside display updates on the shared SPI bus.
+
 The first delivery covers saving/naming a selected target, listing saved
 devices, reopening Track Signal, renaming/deleting entries, and persistence
 across restarts. Verify waiting, signal loss/reacquisition, and Pocket Mode
-before adding the learning workflow. Optional SD backup follows the core flow.
+before adding the learning workflow. A dedicated backup/restore menu can follow
+the core flow; copying the library files provides the initial backup method.
 
 ### Identity and locating limits
 
