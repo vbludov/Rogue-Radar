@@ -88,6 +88,7 @@
 #include <esp_wifi.h>
 #include <TFT_eSPI.h>
 #include <lvgl.h>
+#include "deferred_screen_delete.h"
 #include <RotaryEncoder.h>
 #include "board_leds.h"
 #include "light_alert.h"
@@ -2109,8 +2110,6 @@ static lv_obj_t *createActionBtn(lv_obj_t *parent,
 //   accepted=false -> user cancelled with Back/Esc
 
 static lv_obj_t *keyboardMatrix = nullptr;
-static lv_obj_t *keyboardScreenDeletePending = nullptr;
-static lv_timer_t *keyboardScreenDeleteTimer = nullptr;
 
 static const char *RR_KB_MAP_LOWER[] = {
     "OK", "caps", "Del", "Space", "Esc", "\n",
@@ -2154,45 +2153,10 @@ static void keyboardRefreshCaps() {
     }
 }
 
-// Keyboard close helper:
-// Do not delete the active keyboard screen before the next screen has loaded.
-// Deleting the active screen while LVGL is still processing the encoder/button
-// event can cause a LoadProhibited-style reboot on the T-Embed.
-static void keyboardDeleteOldScreenTimerCb(lv_timer_t *timer) {
-    if (timer) {
-        lv_timer_delete(timer);
-    }
-    keyboardScreenDeleteTimer = nullptr;
-
-    if (!keyboardScreenDeletePending) return;
-
-    // If the old keyboard screen is still active, leave it alone rather than
-    // deleting the currently loaded screen. This keeps the fail-safe behavior
-    // as "minor memory leak during testing" instead of "reboot".
-    if (keyboardScreenDeletePending != lv_screen_active()) {
-        lv_obj_delete(keyboardScreenDeletePending);
-    }
-
-    keyboardScreenDeletePending = nullptr;
-}
-
+// Keyboard and Wi-Fi page cleanup can overlap. Each screen has its own request
+// and remains alive until LVGL releases it from the active transition.
 static void keyboardQueueOldScreenDelete(lv_obj_t *oldScreen, uint32_t delayMs) {
-    if (!oldScreen) return;
-
-    if (keyboardScreenDeleteTimer) {
-        lv_timer_delete(keyboardScreenDeleteTimer);
-        keyboardScreenDeleteTimer = nullptr;
-    }
-
-    // Clean up any older pending screen first, but never delete the active one.
-    if (keyboardScreenDeletePending &&
-        keyboardScreenDeletePending != oldScreen &&
-        keyboardScreenDeletePending != lv_screen_active()) {
-        lv_obj_delete(keyboardScreenDeletePending);
-    }
-
-    keyboardScreenDeletePending = oldScreen;
-    keyboardScreenDeleteTimer = lv_timer_create(keyboardDeleteOldScreenTimerCb, delayMs, nullptr);
+    queueDeferredScreenDelete(oldScreen, delayMs);
 }
 
 static void keyboardFinish(bool accepted) {
@@ -7268,7 +7232,12 @@ static void connectApAttempt(const char *password) {
 static void cb_connectApPasswordDone(const char *text, bool accepted) {
     if (!accepted) {
         connectApUsingCachedPassword = false;
-        createConnectAPTool();
+        // The AP list and its focus group stay alive while the keyboard is open.
+        // Rebuilding here retains two full lists plus the keyboard until cleanup,
+        // exhausting LVGL's pool with many scan results. Resume the original list
+        // instead, preserving the selected AP and scroll position as well.
+        setGroup(wifiToolGroup);
+        lv_screen_load_anim(wifiToolScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
         return;
     }
     connectApUsingCachedPassword = false;
@@ -15063,6 +15032,12 @@ void setup() {
     showSplashScreen();  // Splash Screen Call
 
     lv_init();
+#if LV_USE_LOG
+    // Surface allocation/assert diagnostics on the same USB log as the app.
+    lv_log_register_print_cb([](lv_log_level_t, const char *message) {
+        Serial.print(message);
+    });
+#endif
     lv_tick_set_cb([]() -> uint32_t {
         return (uint32_t)millis();
     });

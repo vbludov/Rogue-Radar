@@ -7,3 +7,18 @@ sh tests/run_host_tests.sh
 ```
 
 The script uses `CXX` when set, defaults to `g++`, and builds in a temporary directory outside the checkout.
+
+The optional LVGL lifecycle regression compiles the pinned LVGL source with
+the firmware's 64 KB built-in memory pool. Pass the installed LVGL dependency
+directory explicitly:
+
+```sh
+bash tests/run_lvgl_tests.sh /path/to/.pio/libdeps/t_embed_cc1101/lvgl
+```
+
+It validates deferred deletion across animated screen transitions and external
+deletion/address reuse. It also exercises a representative 64-bit host version
+of the Connect-to-AP cancel allocation boundary with 30 AP rows: reusing the
+retained list must pass, while rebuilding a second list while the keyboard is
+retained must hit the 64 KB allocator assertion. This is not a build of the
+whole Arduino sketch, and exact byte counts can vary by host architecture.

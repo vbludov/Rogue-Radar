@@ -14,6 +14,7 @@
 
 | Version | Status | Notes |
 |--------|--------|-------|
+| v1.1.0-cc1101.7 | CC1101 test build | Fixes Connect to AP keyboard cancellation by reusing the AP list; protects deferred screen cleanup during transitions |
 | v1.1.0-cc1101.6 | CC1101 test build | Adds direct Track Signal access to nyanBOX, Axon, Raven, Smart Charger, Tesla, Skimmer, and Meta detector results |
 | v1.1.0-cc1101.5 | CC1101 test build | Enlarges Track Signal history chart by 39%; places RSSI beside history and removes the separate status row |
 | v1.1.0-cc1101.4 | CC1101 test build | Adds Wi-Fi/BLE Track Signal with 30-second live chart, strength ring, optional guidance audio, compact mute/light toggles, and selectable AirTag results |

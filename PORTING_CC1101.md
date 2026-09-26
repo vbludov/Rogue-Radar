@@ -198,6 +198,32 @@ OFF and Light Alert ON, repeat with sound ON, check OFF suppresses the effect,
 and verify persistence after reboot and normal lighting restoration. Check
 the master LEDs toggle and dimmed brightness during an alert as well.
 
+### Connect to AP keyboard exit (v1.1.0-cc1101.7)
+
+Cancelling the Wi-Fi password keyboard with Esc or the top Back button returns
+to the retained AP list, preserving its selection and scroll position. Previously
+cancel rebuilt the entire list while the old list and keyboard were still in
+LVGL's fixed memory pool, risking an allocation assertion and frozen UI.
+
+Deferred screen cleanup now tracks each screen independently and waits until
+LVGL has finished using it in a transition. This also protects the password OK
+path's connecting/status screens. LVGL warnings and errors go to the USB serial
+log to make remaining failures diagnosable.
+
+Both PlatformIO board profiles compiled successfully. The CC1101 application
+was flashed with hash verification and reached Boot complete as v1.1.0-cc1101.7.
+With pinned LVGL 9.0.0 and a 64 KiB pool, a representative host scenario with
+30 AP rows reproduces allocation failure when cancel rebuilds the list; reusing
+the retained list passes. This models the allocation pattern rather than the
+entire firmware. The real-LVGL cleanup regression also covers independent and
+duplicate requests, active/previous/delayed animation targets, external deletion,
+and reuse of a freed object's address.
+
+Hardware checks: scan a full AP list, open a secured AP, cancel with Esc and with
+the top button, and repeat. Check the retained selection, Wi-Fi Tools Back and
+re-entry, and both successful and failed password submission to an authorized
+AP. Device interaction testing remains pending until confirmed by the user.
+
 ### Track Signal (v1.1.0-cc1101.4)
 
 Open a Network Scanner or BLE Scanner result, then select **Track Signal**.
