@@ -90,6 +90,7 @@
 #include <lvgl.h>
 #include <RotaryEncoder.h>
 #include "board_leds.h"
+#include "light_alert.h"
 #include "board_backlight.h"
 #include <BLEDevice.h>
 #include <BLEScan.h>
@@ -220,7 +221,7 @@ static lv_indev_t   *lvIndev = nullptr;
 RotaryEncoder encoder(ENCODER_A, ENCODER_B, RotaryEncoder::LatchMode::TWO03);
 
 // ─── APA102 LEDs ────────────────────────────────────────────────
-BoardLedStrip ledStrip;
+AlertLedStrip ledStrip;
 rgb_color ledBuf[NUM_LEDS];
 
 struct MenuLED { uint8_t r, g, b; };
@@ -270,6 +271,8 @@ static lv_timer_t    *alertVolAutoTimer = nullptr;
 static bool           alertVolPendingAutoSet = false;
 
 // ─── I2S Speaker / Alert Chirp State ───────────────────────────
+static bool           lightAlertEnabled = false;
+static lv_obj_t      *miscLightAlertBtn = nullptr;
 static bool           soundEnabled      = (SOUND_ENABLED_DEFAULT != 0);
 static bool           soundReady        = false;
 static bool           menuFeedbackEnabled = (MENU_FEEDBACK_ENABLED_DEFAULT != 0);
@@ -333,6 +336,7 @@ static void loadPersistentSettings() {
     ledsEnabled = settingsPrefs.getBool("leds", (LEDS_ENABLED_DEFAULT != 0));
     dimmingEnabled = settingsPrefs.getBool("dim", (DIMMING_ENABLED_DEFAULT != 0));
 
+    lightAlertEnabled = settingsPrefs.getBool("lightAlert", false);
     soundEnabled = settingsPrefs.getBool("alertOn", (SOUND_ENABLED_DEFAULT != 0));
     alertSoundVolumePercent = settingsPrefs.getInt("alertVol", SOUND_VOLUME_PERCENT);
     alertSoundVolumePercent = clampIntValue(alertSoundVolumePercent,
@@ -395,6 +399,14 @@ static void savePersistentAlertSoundSetting() {
 #if PERSISTENT_SETTINGS_ENABLED
     settingsPrefs.begin(PREFS_NAMESPACE, false);
     settingsPrefs.putBool("alertOn", soundEnabled);
+    settingsPrefs.end();
+#endif
+}
+
+static void savePersistentLightAlertSetting() {
+#if PERSISTENT_SETTINGS_ENABLED
+    settingsPrefs.begin(PREFS_NAMESPACE, false);
+    settingsPrefs.putBool("lightAlert", lightAlertEnabled);
     settingsPrefs.end();
 #endif
 }
@@ -1006,6 +1018,8 @@ static void applyBacklightLevel(uint8_t level) {
 }
 
 static uint8_t activeLedBrightness(uint8_t requestedBrightness = LED_BRIGHTNESS) {
+    ledStrip.setBrightnessLimit(!ledsEnabled ? 0 :
+        ((dimmingEnabled && backlightDimmed) ? LED_DIM_BRIGHTNESS : 31));
     // Runtime LED toggle: keep the APA102 ring dark while preserving
     // the last requested colour/status internally.
     if (!ledsEnabled) {
@@ -1184,6 +1198,7 @@ static void stopSoundDriverAfterChirp() {
 
 static void playDeauthChirp() {
     if (!soundCooldownReady(lastDeauthSoundMs)) return;
+    ledStrip.triggerAlert();
     soundTone(2100, 65, (uint8_t)alertSoundVolumePercent);
     soundSilence(45);
     soundTone(2100, 65, (uint8_t)alertSoundVolumePercent);
@@ -1192,6 +1207,7 @@ static void playDeauthChirp() {
 
 static void playFlockChirp() {
     if (!soundCooldownReady(lastFlockSoundMs)) return;
+    ledStrip.triggerAlert();
     soundTone(520, 170, (uint8_t)alertSoundVolumePercent);
     soundSilence(50);
     soundTone(390, 210, (uint8_t)alertSoundVolumePercent);
@@ -1200,6 +1216,7 @@ static void playFlockChirp() {
 
 static void playPwnagotchiChirp() {
     if (!soundCooldownReady(lastPwnSoundMs)) return;
+    ledStrip.triggerAlert();
     soundTone(880, 80, (uint8_t)alertSoundVolumePercent);
     soundSilence(35);
     soundTone(1175, 80, (uint8_t)alertSoundVolumePercent);
@@ -1210,6 +1227,7 @@ static void playPwnagotchiChirp() {
 
 static void playFlipperChirp() {
     if (!soundCooldownReady(lastFlipSoundMs)) return;
+    ledStrip.triggerAlert();
     soundTone(1200, 55, (uint8_t)alertSoundVolumePercent);
     soundSilence(30);
     soundTone(1600, 55, (uint8_t)alertSoundVolumePercent);
@@ -1223,6 +1241,7 @@ static void playFlipperChirp() {
 // recent Flipper alert.
 static void playTeslaChirp() {
     if (!soundCooldownReady(lastTeslaSoundMs)) return;
+    ledStrip.triggerAlert();
     soundTone(1200, 55, (uint8_t)alertSoundVolumePercent);
     soundSilence(30);
     soundTone(1600, 55, (uint8_t)alertSoundVolumePercent);
@@ -1233,6 +1252,7 @@ static void playTeslaChirp() {
 
 static void playBLESuspiciousChirp() {
     if (!soundCooldownReady(lastBleSusSoundMs)) return;
+    ledStrip.triggerAlert();
     soundTone(430, 120, (uint8_t)alertSoundVolumePercent);
     soundSilence(80);
     soundTone(430, 120, (uint8_t)alertSoundVolumePercent);
@@ -1375,6 +1395,21 @@ static void toggleSoundEnabled() {
     savePersistentAlertSoundSetting();
 }
 
+
+static const char *getLightAlertMenuLabel() {
+    return lightAlertEnabled ? LV_SYMBOL_BELL " Light Alert: ON"
+                             : LV_SYMBOL_BELL " Light Alert: OFF";
+}
+
+static void toggleLightAlertEnabled() {
+    lightAlertEnabled = ledStrip.setAlertEnabled(!lightAlertEnabled);
+    resetInactivityTimer();
+    if (miscLightAlertBtn) {
+        lv_obj_t *label = lv_obj_get_child(miscLightAlertBtn, 0);
+        if (label) lv_label_set_text(label, getLightAlertMenuLabel());
+    }
+    savePersistentLightAlertSetting();
+}
 
 static const char *getAlertVolumeMenuLabel() {
     static char label[44];
@@ -2980,6 +3015,7 @@ static void cb_miscToolSelected(lv_event_t *e) {
         case 11: toggleDisplayRotation();  break;
         case 12: createResetSettings();    break;
         case 13: createPowerOffConfirm();  break;
+        case 14: toggleLightAlertEnabled(); break;
     }
 }
 
@@ -3006,11 +3042,14 @@ void createMiscMenu() {
     miscDimmingBtn = nullptr;
     miscLedsBtn = nullptr;
     miscSoundBtn = nullptr;
+    miscLightAlertBtn = nullptr;
     miscMenuSoundBtn = nullptr;
     miscAlertVolumeBtn = nullptr;
     miscRotationBtn = nullptr;
 
-    for (int i = 0; i < 14; i++) {
+    // Keep stable action IDs while grouping the two alert toggles together.
+    const uint8_t itemOrder[] = {0, 1, 2, 3, 4, 5, 6, 7, 14, 8, 9, 10, 11, 12, 13};
+    for (uint8_t i : itemOrder) {
 #if !RR_HAS_POWER_OFF
         if (i == 13) continue;
 #endif
@@ -3036,6 +3075,8 @@ void createMiscMenu() {
             label = LV_SYMBOL_NEW_LINE "  Reset Settings";
         } else if (i == 13) {
             label = LV_SYMBOL_POWER "  Power Off";
+        } else if (i == 14) {
+            label = getLightAlertMenuLabel();
         } else {
             label = "  Unknown";
         }
@@ -3058,6 +3099,8 @@ void createMiscMenu() {
             miscMenuSoundBtn = btn;
         } else if (i == 11) {
             miscRotationBtn = btn;
+        } else if (i == 14) {
+            miscLightAlertBtn = btn;
         }
     }
 
@@ -14807,6 +14850,7 @@ void setup() {
 
     loadPersistentSettings();
     loadPersistentScanSettings();
+    lightAlertEnabled = ledStrip.setAlertEnabled(lightAlertEnabled);
 
     // I2S sound is lazy-initialized only when a chirp plays.
 

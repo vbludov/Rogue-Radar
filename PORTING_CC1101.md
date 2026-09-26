@@ -148,6 +148,25 @@ repeat while held, no action on the home screen, and keyboard cancellation
 without applying text. Also check Back after a scan and the encoder's normal
 operation. Build validation alone does not establish these hardware results.
 
+### Light Alert (v1.1.0-cc1101.2)
+
+Misc Tools > Light Alert is a saved ON/OFF setting, OFF by default. It shares
+the detection chirps' event gates and cooldowns, independently of Alert Sound.
+The ring fills red for 240 ms, then runs two red chase rotations before
+restoring the latest menu/status/scan lighting. Further hits during an active
+animation are coalesced. The master LEDs switch and inactivity dimming apply.
+Menu sounds, connection tones, and volume previews do not trigger it.
+
+Validation: both PlatformIO board profiles compile. Deterministic host tests
+with 7 and 8 LEDs passed flash/chase timing, coalescing, background restoration,
+disable, and brightness limits. The CC1101 app was flashed with hash verification
+and reached Boot complete as v1.1.0-cc1101.2.
+
+Hardware validation remains required: trigger a detector alert with sound
+OFF and Light Alert ON, repeat with sound ON, check OFF suppresses the effect,
+and verify persistence after reboot and normal lighting restoration. Check
+the master LEDs toggle and dimmed brightness during an alert as well.
+
 ### General hardware checks
 
 1. Confirm the boot log reports the intended board profile, 16 MB flash,
